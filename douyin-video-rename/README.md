@@ -46,10 +46,10 @@ winget install --id Gyan.FFmpeg.Shared --exact --source winget
 
 # 第一步：匹配（找出仍为"神待福瑞*"且内容与有意义标题视频相同的文件）
 # 只生成 JSON，不会改名任何视频。
-py -3.12 match_videos.py F:\Downloads F:\Downloads\douyin-matches.json
+py -3.12 match_videos.py F:\Downloads F:\Downloads\douyin-matches.json --time-window-minutes 10
 
 # 可选的 GPU 语义匹配器。要求 CUDA；只写 JSON，绝不会回退 CPU 推理或改名。
-py -3.12 match_videos_gpu.py F:\Downloads F:\Downloads\douyin-gpu-matches.json
+py -3.12 match_videos_gpu.py F:\Downloads F:\Downloads\douyin-gpu-matches.json --time-window-minutes 10
 
 # 第二步：预览重命名（dry-run，不实际改名）
 py -3.12 rename_videos.py F:\Downloads\douyin-matches.json

@@ -8,6 +8,7 @@
 用法: python3 match_videos.py [视频目录] [匹配输出json]
 """
 import datetime
+import argparse
 import json
 import os
 import subprocess
@@ -16,8 +17,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from common import hamming, media_tool, probe_duration, probe_wh
 
-DL = sys.argv[1] if len(sys.argv) > 1 else '/Users/bjergsen/Downloads'
-OUT = sys.argv[2] if len(sys.argv) > 2 else 'matches.json'
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8', errors='backslashreplace')
+
+DL = '/Users/bjergsen/Downloads'
+OUT = 'matches.json'
 # 只处理当前仍为无意义标题的文件(已重命名的不会匹配前缀)
 PREFIX = '神待福瑞'
 FRAMES = 8
@@ -25,6 +30,36 @@ DUR_TOL = 2.0
 DIST_THRESH = 8
 CLOSE_MIN = 6
 WORKERS = 8
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('directory', nargs='?', default=DL)
+    parser.add_argument('output', nargs='?', default=OUT)
+    parser.add_argument('--time-window-minutes', type=float,
+                        help='只保留与无意义标题视频下载时间相距不超过此值的有意义标题候选')
+    args = parser.parse_args()
+    if args.time_window_minutes is not None and args.time_window_minutes <= 0:
+        parser.error('--time-window-minutes 必须大于 0')
+    return args
+
+
+def select_videos(directory: str, time_window_minutes: float | None):
+    extensions = ('.mp4', '.mov', '.mkv', '.flv', '.webm', '.avi', '.m4v')
+    all_videos = sorted(name for name in os.listdir(directory) if name.lower().endswith(extensions))
+    meaningless = [name for name in all_videos if name.startswith(PREFIX)]
+    meaningful = [name for name in all_videos if not name.startswith(PREFIX)]
+    if time_window_minutes is None:
+        return all_videos, meaningless, meaningful
+    limit = time_window_minutes * 60
+    source_times = [os.path.getmtime(os.path.join(directory, name)) for name in meaningless]
+    selected_meaningful = []
+    for name in meaningful:
+        file_time = os.path.getmtime(os.path.join(directory, name))
+        if any(abs(file_time - timestamp) <= limit for timestamp in source_times):
+            selected_meaningful.append(name)
+    meaningful = selected_meaningful
+    return sorted(meaningless + meaningful), meaningless, meaningful
 
 
 def extract_8(path: str, dur: float) -> list[bytes] | None:
@@ -58,9 +93,15 @@ def process_video(f: str):
 
 def main():
     from common import dhash
-    vids = sorted(f for f in os.listdir(DL) if f.lower().endswith(('.mp4', '.mov', '.mkv', '.flv', '.webm', '.avi', '.m4v')))
-    meaningless = [f for f in vids if f.startswith(PREFIX)]
-    meaningful = [f for f in vids if not f.startswith(PREFIX)]
+    global DL, OUT
+    args = parse_args()
+    DL = os.path.abspath(args.directory)
+    OUT = args.output
+    if not os.path.isdir(DL):
+        raise SystemExit(f'视频目录不存在: {DL}')
+    vids, meaningless, meaningful = select_videos(DL, args.time_window_minutes)
+    if args.time_window_minutes is not None:
+        print(f'时间窗口: {args.time_window_minutes:g} 分钟；候选视频: {len(vids)}', flush=True)
 
     meta, hashes = {}, {}
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:

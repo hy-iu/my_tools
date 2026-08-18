@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import torch
@@ -21,6 +22,10 @@ import torch.nn.functional as functional
 from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
 from common import aspect_ratio, media_tool, probe_duration, probe_wh
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8', errors='backslashreplace')
 
 PREFIX = '神待福瑞'
 SAMPLES = 4
@@ -34,9 +39,17 @@ def parse_args():
     parser.add_argument('directory', nargs='?', default=os.path.expanduser('~/Downloads'))
     parser.add_argument('output', nargs='?', default='gpu-matches.json')
     parser.add_argument('--batch-size', type=int, default=128)
+    parser.add_argument('--workers', type=int, default=min(8, os.cpu_count() or 1),
+                        help='CPU 抽帧并发数（默认最多 8）')
+    parser.add_argument('--time-window-minutes', type=float,
+                        help='只保留与无意义标题视频下载时间相距不超过此值的有意义标题候选')
     args = parser.parse_args()
     if args.batch_size < 1:
         parser.error('--batch-size 必须至少为 1')
+    if args.workers < 1:
+        parser.error('--workers 必须至少为 1')
+    if args.time_window_minutes is not None and args.time_window_minutes <= 0:
+        parser.error('--time-window-minutes 必须大于 0')
     return args
 
 
@@ -58,6 +71,17 @@ def extract_frames(path: str, duration: float) -> np.ndarray | None:
             return None
         frames.append(np.frombuffer(result.stdout[:expected], dtype=np.uint8).reshape(SIZE, SIZE, 3))
     return np.stack(frames)
+
+
+def process_video(name: str, directory: str):
+    path = os.path.join(directory, name)
+    duration = probe_duration(path)
+    if not duration:
+        return name, None, None
+    frames = extract_frames(path, duration)
+    if frames is None:
+        return name, None, None
+    return name, {'wh': probe_wh(path), 'dur': duration}, frames
 
 
 def load_model() -> torch.nn.Module:
@@ -100,6 +124,25 @@ def candidate_score(source: torch.Tensor, reference: torch.Tensor) -> tuple[floa
     return 0.5 * video_score + 0.5 * frame_mean, frame_mean, frame_scores.min().item()
 
 
+def select_videos(directory: str, time_window_minutes: float | None):
+    extensions = ('.mp4', '.mov', '.mkv', '.flv', '.webm', '.avi', '.m4v')
+    all_videos = sorted(name for name in os.listdir(directory) if name.lower().endswith(extensions))
+    unnamed = [name for name in all_videos if name.startswith(PREFIX)]
+    named = [name for name in all_videos if not name.startswith(PREFIX)]
+    if time_window_minutes is None:
+        return all_videos
+    limit = time_window_minutes * 60
+    source_times = [os.path.getmtime(os.path.join(directory, name)) for name in unnamed]
+    selected_named = []
+    for name in named:
+        file_time = os.path.getmtime(os.path.join(directory, name))
+        if any(abs(file_time - timestamp) <= limit for timestamp in source_times):
+            selected_named.append(name)
+    selected = sorted(unnamed + selected_named)
+    print(f'时间窗口: {time_window_minutes:g} 分钟；候选视频: {len(selected)}')
+    return selected
+
+
 def main():
     args = parse_args()
     directory = os.path.abspath(args.directory)
@@ -109,22 +152,23 @@ def main():
     device = torch.cuda.get_device_name(0)
     print(f'GPU: {device}')
     print('模型: MobileNetV3-Small ImageNet 预训练特征；GPU-only，无 CPU 推理回退')
-    extensions = ('.mp4', '.mov', '.mkv', '.flv', '.webm', '.avi', '.m4v')
-    names = sorted(name for name in os.listdir(directory) if name.lower().endswith(extensions))
+    names = select_videos(directory, args.time_window_minutes)
     metadata, frames_by_video = {}, {}
-    for number, name in enumerate(names, 1):
-        path = os.path.join(directory, name)
-        duration = probe_duration(path)
-        if not duration:
-            print(f'跳过（无时长） {name}', flush=True)
-            continue
-        frames = extract_frames(path, duration)
-        if frames is None:
-            print(f'跳过（抽帧失败） {name}', flush=True)
-            continue
-        metadata[name] = {'wh': probe_wh(path), 'dur': duration}
-        frames_by_video[name] = frames
-        print(f'抽帧 {number}/{len(names)}: {name}', flush=True)
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(process_video, name, directory): name for name in names}
+        for number, future in enumerate(as_completed(futures), 1):
+            name = futures[future]
+            try:
+                _, meta, frames = future.result()
+            except Exception as exc:
+                print(f'跳过（抽帧异常） {name}: {exc}', flush=True)
+                continue
+            if meta is None:
+                print(f'跳过（抽帧失败） {name}', flush=True)
+                continue
+            metadata[name] = meta
+            frames_by_video[name] = frames
+            print(f'抽帧 {number}/{len(names)}: {name}', flush=True)
 
     embeddings = embed_videos(frames_by_video, args.batch_size)
     unknown = [name for name in embeddings if name.startswith(PREFIX)]
