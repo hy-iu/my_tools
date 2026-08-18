@@ -38,7 +38,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', nargs='?', default=os.path.expanduser('~/Downloads'))
     parser.add_argument('output', nargs='?', default='gpu-matches.json')
-    parser.add_argument('--batch-size', type=int, default=128)
+    parser.add_argument('--batch-size', type=int, default=1024)
     parser.add_argument('--workers', type=int, default=min(8, os.cpu_count() or 1),
                         help='CPU 抽帧并发数（默认最多 8）')
     parser.add_argument('--time-window-minutes', type=float,
@@ -54,23 +54,20 @@ def parse_args():
 
 
 def extract_frames(path: str, duration: float) -> np.ndarray | None:
-    """Extract four padded RGB frames in memory; no temporary files are made."""
-    frames = []
+    """Extract four uniform padded RGB frames with one FFmpeg process."""
     video_filter = (
+        f'fps={SAMPLES / duration:.12f},'
         f'scale={SIZE}:{SIZE}:force_original_aspect_ratio=decrease,'
         f'pad={SIZE}:{SIZE}:(ow-iw)/2:(oh-ih):color=black,format=rgb24')
-    for index in range(SAMPLES):
-        timestamp = duration * (index + 0.5) / SAMPLES
-        result = subprocess.run(
-            [media_tool('ffmpeg'), '-v', 'error', '-ss', str(timestamp), '-i', path,
-             '-frames:v', '1', '-vf', video_filter, '-f', 'rawvideo', '-pix_fmt', 'rgb24',
-             'pipe:1'],
-            capture_output=True)
-        expected = SIZE * SIZE * 3
-        if result.returncode != 0 or len(result.stdout) < expected:
-            return None
-        frames.append(np.frombuffer(result.stdout[:expected], dtype=np.uint8).reshape(SIZE, SIZE, 3))
-    return np.stack(frames)
+    result = subprocess.run(
+        [media_tool('ffmpeg'), '-v', 'error', '-i', path, '-vf', video_filter,
+         '-frames:v', str(SAMPLES), '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+        capture_output=True)
+    frame_bytes = SIZE * SIZE * 3
+    expected = SAMPLES * frame_bytes
+    if result.returncode != 0 or len(result.stdout) < expected:
+        return None
+    return np.frombuffer(result.stdout[:expected], dtype=np.uint8).reshape(SAMPLES, SIZE, SIZE, 3)
 
 
 def process_video(name: str, directory: str):

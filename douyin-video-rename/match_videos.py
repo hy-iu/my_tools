@@ -63,18 +63,17 @@ def select_videos(directory: str, time_window_minutes: float | None):
 
 
 def extract_8(path: str, dur: float) -> list[bytes] | None:
-    """Seek to eight positions and return 32×32 grayscale frames in memory."""
-    frames = []
-    for k in range(FRAMES):
-        ts = dur * (k + 0.5) / FRAMES
-        r = subprocess.run(
-            [media_tool('ffmpeg'), '-v', 'error', '-ss', str(ts), '-i', path, '-frames:v', '1',
-             '-vf', 'scale=32:32', '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1'],
-            capture_output=True)
-        if r.returncode != 0 or len(r.stdout) < 1024:
-            return None
-        frames.append(r.stdout[:1024])
-    return frames
+    """Extract eight uniform 32×32 grayscale frames with one FFmpeg process."""
+    r = subprocess.run(
+        [media_tool('ffmpeg'), '-v', 'error', '-i', path,
+         '-vf', f'fps={FRAMES / dur:.12f},scale=32:32', '-frames:v', str(FRAMES),
+         '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1'],
+        capture_output=True)
+    frame_bytes = 32 * 32
+    expected = FRAMES * frame_bytes
+    if r.returncode != 0 or len(r.stdout) < expected:
+        return None
+    return [r.stdout[index * frame_bytes:(index + 1) * frame_bytes] for index in range(FRAMES)]
 
 
 def process_video(f: str):

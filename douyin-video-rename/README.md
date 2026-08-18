@@ -51,6 +51,10 @@ py -3.12 match_videos.py F:\Downloads F:\Downloads\douyin-matches.json --time-wi
 # 可选的 GPU 语义匹配器。要求 CUDA；只写 JSON，绝不会回退 CPU 推理或改名。
 py -3.12 match_videos_gpu.py F:\Downloads F:\Downloads\douyin-gpu-matches.json --time-window-minutes 10
 
+# NVDEC + TorchCodec：先创建隔离环境并安装 PyTorch/TorchCodec CUDA wheel，
+# 然后直接由 GPU 解码并计算哈希。该程序没有 CPU 解码或推理回退。
+.\.venv-torchcodec\Scripts\python.exe match_videos_torchcodec.py F:\Downloads F:\Downloads\douyin-nvdec-matches.json --time-window-minutes 10 --workers 32
+
 # 第二步：预览重命名（dry-run，不实际改名）
 py -3.12 rename_videos.py F:\Downloads\douyin-matches.json
 
@@ -63,6 +67,10 @@ py -3.12 rename_videos.py F:\Downloads\douyin-matches.json --go F:\Downloads
 `match_videos_gpu.py` 使用 CUDA；其 256 帧基准比 CPU 快约 24 倍，且无 CPU
 推理回退。两个程序均优先发现 winget 安装的独立 FFmpeg；也可通过
 `DOUYIN_FFMPEG` 和 `DOUYIN_FFPROBE` 指定路径。
+
+TorchCodec 的 NVDEC matcher 默认 32 路并行，并通过 `nvidia-smi` 将驱动级显存
+峰值写入结果 JSON。RTX 5060 Ti 实测 32 路为约 11.02 视频/秒；48 路约
+10.94 视频/秒但显存占用更高，因此 48 路只适合压力测试，不作为默认设置。
 
 匹配原理：每段视频单次 ffmpeg 均匀提取 8 帧 32x32 灰度图，计算 64 位
 感知哈希；要求时长差 ≤2s 且 8 帧中至少 6 帧哈希距离 ≤8。
