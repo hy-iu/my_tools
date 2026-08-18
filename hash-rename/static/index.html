@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hash Rename</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">LOCAL FILE TOOL</p>
+      <h1>Hash Rename</h1>
+    </div>
+    <div class="safety">只监听本机 · 默认不改文件</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel setup-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>1. 扫描文件夹</h2>
+          <p>同哈希文件会被分组，文件名和目录不参与匹配。</p>
+        </div>
+        <span class="step">SCAN</span>
+      </div>
+      <label for="roots">每行一个文件夹路径</label>
+      <textarea id="roots" spellcheck="false">I:\Pictures
+F:\Favorites\m</textarea>
+      <div class="controls">
+        <label>算法
+          <select id="algorithm">
+            <option value="sha256" selected>SHA-256</option>
+            <option value="blake2b">BLAKE2b</option>
+            <option value="md5">MD5（兼容旧工具）</option>
+          </select>
+        </label>
+        <label>并行读取
+          <input id="workers" type="number" min="1" max="16" value="4">
+        </label>
+        <button id="scan" class="primary">开始扫描</button>
+      </div>
+      <label class="source-root-label" for="source-root">默认名称来源文件夹（可选）
+        <input id="source-root" type="text" placeholder="例如 I:\\Pictures；优先选其中的文件名">
+      </label>
+      <button id="apply-source-root" class="secondary" disabled>应用名称来源默认值</button>
+      <div id="scan-status" class="status" role="status">等待扫描</div>
+      <div class="progress"><span id="progress-bar"></span></div>
+    </section>
+
+    <section class="panel groups-panel">
+      <div class="panel-heading sticky-heading">
+        <div>
+          <h2>2. 逐组选择名称</h2>
+          <p>单选“名称来源”或输入自定义名称，再勾选要改名的文件。完全同名组默认隐藏。</p>
+        </div>
+        <div class="heading-actions">
+          <span id="group-count" class="count">0 组</span>
+          <label class="inline-check"><input id="show-same-name" type="checkbox">显示完全同名组</label>
+          <button id="select-all-targets" class="secondary" disabled>全选目标</button>
+          <button id="clear-conflicts" class="secondary clear-conflicts-button" disabled>取消勾选冲突目标</button>
+          <button id="clear-same-name" class="secondary clear-same-name-button" disabled>取消勾选同名项</button>
+          <button id="clear-targets" class="secondary" disabled>清空目标</button>
+        </div>
+      </div>
+      <div id="groups" class="groups empty-state">
+        <div class="empty-icon">⌕</div>
+        <p>扫描完成后，哈希组会显示在这里。</p>
+      </div>
+    </section>
+
+    <section class="panel plan-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>3. 预览并执行</h2>
+          <p>先生成计划；只有点击执行后才会改名。冲突会阻止整批执行。</p>
+        </div>
+        <span id="plan-count" class="count">未生成计划</span>
+      </div>
+      <div class="plan-actions">
+        <button id="make-plan" class="primary" disabled>生成重命名计划</button>
+        <button id="execute" class="danger" disabled>执行计划</button>
+      </div>
+      <div id="plan" class="plan empty-state"><p>还没有重命名计划。</p></div>
+    </section>
+
+    <section class="panel history-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>历史与撤销</h2>
+          <p>每次执行会写入本地 history.jsonl，可逐笔撤销。</p>
+        </div>
+        <button id="refresh-history" class="secondary">刷新</button>
+      </div>
+      <div id="history" class="history empty-state"><p>暂无执行记录。</p></div>
+    </section>
+  </main>
+  <aside id="conflict-map" class="conflict-map" aria-label="步骤 2 导航色条">
+    <div class="map-title">MAP</div>
+    <div id="map-markers" class="map-markers"></div>
+    <div class="map-legend"><span class="legend-conflict"></span>冲突<br><span class="legend-selected"></span>将改名<br><span class="legend-same-name"></span>同名跳过</div>
+  </aside>
+  <section id="problems-panel" class="problems-panel" aria-label="问题列表">
+    <header class="problems-header">
+      <div><strong>问题</strong><span id="problem-count" class="problem-count">0 个错误</span></div>
+      <button id="toggle-problems" class="secondary">展开</button>
+    </header>
+    <div id="problems-list" class="problems-list"><p>步骤 2 的冲突会显示在这里。</p></div>
+  </section>
+  <template id="group-template">
+    <article class="group-card">
+      <div class="group-header">
+        <div><span class="group-label"></span><code class="digest"></code></div>
+        <div class="group-tools"><span class="group-conflicts"></span><button class="choose-all secondary">选中其他</button><button class="choose-none secondary">不改名</button></div>
+      </div>
+      <label class="custom-name-label"><input class="custom-radio" type="radio" title="使用自定义名称"><span>自定义名称（含扩展名）</span><input class="custom-name" type="text" placeholder="选中左侧圆钮后输入名称" disabled></label>
+      <div class="file-list"></div>
+    </article>
+  </template>
+  <script src="/static/app.js"></script>
+</body>
+</html>
