@@ -1,10 +1,42 @@
 #!/usr/bin/env python3
 """抖音视频重命名与动图匹配的共享工具函数。"""
 import os
+import shutil
 import subprocess
+from functools import lru_cache
+from pathlib import Path
 
 VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.flv', '.webm')
 IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
+
+
+@lru_cache(maxsize=None)
+def media_tool(name: str) -> str:
+    """Locate an independently installed FFmpeg tool.
+
+    ``DOUYIN_FFMPEG`` and ``DOUYIN_FFPROBE`` override discovery.  On Windows,
+    Winget's standalone Gyan FFmpeg package is preferred over PATH so a bundled
+    copy from an unrelated application is never selected accidentally.
+    """
+    override = os.environ.get(f'DOUYIN_{name.upper()}')
+    if override and Path(override).is_file():
+        return override
+
+    executable = f'{name}.exe' if os.name == 'nt' else name
+    if os.name == 'nt':
+        local_app_data = os.environ.get('LOCALAPPDATA')
+        if local_app_data:
+            packages = Path(local_app_data) / 'Microsoft' / 'WinGet' / 'Packages'
+            for candidate in packages.glob(f'Gyan.FFmpeg.*/*/bin/{executable}'):
+                if candidate.is_file():
+                    return str(candidate)
+
+    on_path = shutil.which(name)
+    if on_path and 'lammps' not in Path(on_path).as_posix().lower():
+        return on_path
+    raise RuntimeError(
+        f'找不到独立安装的 {name}。请执行 winget install --id Gyan.FFmpeg.Shared '
+        f'--exact，或设置 DOUYIN_{name.upper()}。')
 
 
 def hamming(a, b):
@@ -27,7 +59,7 @@ def dhash(raw: bytes, blocks: int = 8) -> int:
 def small_gray(src: str, out: str, w: int = 32, h: int = 32) -> str | None:
     """Extract one frame (first frame) scaled to grayscale rawvideo."""
     r = subprocess.run(
-        ['ffmpeg', '-v', 'error', '-i', src, '-frames:v', '1',
+        [media_tool('ffmpeg'), '-v', 'error', '-i', src, '-frames:v', '1',
          '-vf', f'scale={w}:{h}', '-f', 'rawvideo', '-pix_fmt', 'gray', '-y', out],
         capture_output=True)
     if r.returncode == 0 and os.path.getsize(out) >= w * h:
@@ -37,7 +69,7 @@ def small_gray(src: str, out: str, w: int = 32, h: int = 32) -> str | None:
 
 def probe_wh(path: str) -> tuple[int, int] | None:
     r = subprocess.run(
-        ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+        [media_tool('ffprobe'), '-v', 'error', '-select_streams', 'v:0',
          '-show_entries', 'stream=width,height', '-of', 'csv=p=0', path],
         capture_output=True, text=True)
     lines = r.stdout.strip().split('\n')
@@ -47,7 +79,7 @@ def probe_wh(path: str) -> tuple[int, int] | None:
 
 def probe_duration(path: str) -> float | None:
     r = subprocess.run(
-        ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+        [media_tool('ffprobe'), '-v', 'error', '-show_entries', 'format=duration',
          '-of', 'csv=p=0', path],
         capture_output=True, text=True)
     try:

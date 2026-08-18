@@ -39,17 +39,30 @@
 ## 用法（以后每次下载后运行）
 
 ```bash
-cd ~/Documents/GitHub/my_tools/douyin-video-rename
+cd douyin-video-rename
+
+# Windows 主机 Python。首次安装独立 FFmpeg（不使用其他软件附带版本）：
+winget install --id Gyan.FFmpeg.Shared --exact --source winget
 
 # 第一步：匹配（找出仍为"神待福瑞*"且内容与有意义标题视频相同的文件）
-python3 match_videos.py /Users/bjergsen/Downloads
+# 只生成 JSON，不会改名任何视频。
+py -3.12 match_videos.py F:\Downloads F:\Downloads\douyin-matches.json
+
+# 可选的 GPU 语义匹配器。要求 CUDA；只写 JSON，绝不会回退 CPU 推理或改名。
+py -3.12 match_videos_gpu.py F:\Downloads F:\Downloads\douyin-gpu-matches.json
 
 # 第二步：预览重命名（dry-run，不实际改名）
-python3 rename_videos.py matches.json
+py -3.12 rename_videos.py F:\Downloads\douyin-matches.json
 
 # 确认无误后执行，并自动追加记录到 抖音视频重命名记录.txt
-python3 rename_videos.py matches.json --go
+py -3.12 rename_videos.py F:\Downloads\douyin-matches.json --go F:\Downloads
 ```
+
+在 RTX 5060 Ti 上，当前逐帧抽取算法使用 CUDA 解码反而比 CPU 慢，因此
+`match_videos.py` 固定使用 CPU 感知哈希。批量视觉嵌入则由
+`match_videos_gpu.py` 使用 CUDA；其 256 帧基准比 CPU 快约 24 倍，且无 CPU
+推理回退。两个程序均优先发现 winget 安装的独立 FFmpeg；也可通过
+`DOUYIN_FFMPEG` 和 `DOUYIN_FFPROBE` 指定路径。
 
 匹配原理：每段视频单次 ffmpeg 均匀提取 8 帧 32x32 灰度图，计算 64 位
 感知哈希；要求时长差 ≤2s 且 8 帧中至少 6 帧哈希距离 ≤8。

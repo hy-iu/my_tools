@@ -12,10 +12,9 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from common import hamming, probe_duration, probe_wh
+from common import hamming, media_tool, probe_duration, probe_wh
 
 DL = sys.argv[1] if len(sys.argv) > 1 else '/Users/bjergsen/Downloads'
 OUT = sys.argv[2] if len(sys.argv) > 2 else 'matches.json'
@@ -28,47 +27,51 @@ CLOSE_MIN = 6
 WORKERS = 8
 
 
-def extract_8(path: str, dur: float, out_prefix: str) -> bool:
-    """8 次 -ss 快进各取 1 帧(避免 fps 滤镜全量解码), 输出 out_prefix_0..7.raw"""
-    ok = True
+def extract_8(path: str, dur: float) -> list[bytes] | None:
+    """Seek to eight positions and return 32×32 grayscale frames in memory."""
+    frames = []
     for k in range(FRAMES):
         ts = dur * (k + 0.5) / FRAMES
-        out = f'{out_prefix}_{k}.raw'
         r = subprocess.run(
-            ['ffmpeg', '-v', 'error', '-ss', str(ts), '-i', path, '-frames:v', '1',
-             '-vf', 'scale=32:32', '-f', 'rawvideo', '-pix_fmt', 'gray', '-y', out],
+            [media_tool('ffmpeg'), '-v', 'error', '-ss', str(ts), '-i', path, '-frames:v', '1',
+             '-vf', 'scale=32:32', '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1'],
             capture_output=True)
-        if r.returncode != 0 or os.path.getsize(out) < 1024:
-            ok = False
-    return ok
+        if r.returncode != 0 or len(r.stdout) < 1024:
+            return None
+        frames.append(r.stdout[:1024])
+    return frames
 
 
-def process_video(f: str, tmp: str):
+def process_video(f: str):
     """提取一个视频的 8 帧哈希 + 元数据。"""
     from common import dhash
     p = os.path.join(DL, f)
     dur = probe_duration(p)
     if not dur:
         return f, None, None
-    out_prefix = os.path.join(tmp, f'{abs(hash(f)) % 10**9}')
-    if not extract_8(p, dur, out_prefix):
+    raw_frames = extract_8(p, dur)
+    if raw_frames is None:
         return f, None, None
-    raw = b''.join(open(f'{out_prefix}_{k}.raw', 'rb').read() for k in range(FRAMES))
-    hashes = [dhash(raw[k*1024:(k+1)*1024]) for k in range(FRAMES)]
+    hashes = [dhash(raw) for raw in raw_frames]
     return f, {'wh': probe_wh(p), 'dur': dur}, hashes
 
 
 def main():
     from common import dhash
-    tmp = tempfile.mkdtemp(prefix='dy_match_')
-
-    vids = sorted(f for f in os.listdir(DL) if f.lower().endswith(('.mp4', '.mov', '.mkv')))
+    vids = sorted(f for f in os.listdir(DL) if f.lower().endswith(('.mp4', '.mov', '.mkv', '.flv', '.webm', '.avi', '.m4v')))
     meaningless = [f for f in vids if f.startswith(PREFIX)]
     meaningful = [f for f in vids if not f.startswith(PREFIX)]
 
     meta, hashes = {}, {}
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        for f, m, hs in pool.map(lambda f: process_video(f, tmp), vids):
+        futures = {pool.submit(process_video, f): f for f in vids}
+        for future in as_completed(futures):
+            f = futures[future]
+            try:
+                _, m, hs = future.result()
+            except Exception as exc:
+                print(f'采集失败 {f}: {exc}', flush=True)
+                continue
             if m is not None:
                 meta[f] = m
                 hashes[f] = hs
