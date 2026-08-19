@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>JSON Tree Viewer</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; }
+body { font: 13px/1.5 'Cascadia Code', Consolas, monospace; background:#1e1e2e; color:#cdd6f4; display:flex; flex-direction:column; overflow:hidden; }
+#topbar { padding:10px 16px 8px; flex-shrink:0; }
+#drop { border:2px dashed #585b70; border-radius:6px; padding:14px; text-align:center; color:#a6adc8; cursor:pointer; transition:border-color .2s, background .2s; }
+#drop.over { border-color:#89b4fa; background:#313244; }
+#drop.mini { padding:6px; font-size:12px; }
+#info { color:#6c7086; font-size:12px; margin-top:6px; }
+#main { display:flex; flex:1; min-height:0; padding:0 16px 16px; gap:14px; }
+#left { flex:1; min-width:0; overflow:auto; }
+#tree { user-select:none; }
+.node { margin-left:20px; border-left:1px solid #45475a; padding-left:12px; }
+.node.root { margin-left:0; border-left:none; padding-left:0; }
+.row { display:flex; align-items:baseline; gap:6px; padding:1px 4px; cursor:pointer; border-radius:3px; transition:background .12s; }
+.row:hover { background:#313244; }
+.row.active { background:#45475a; outline:1px solid #585b70; }
+.toggle { width:14px; flex-shrink:0; cursor:pointer; color:#89b4fa; font-size:11px; text-align:center; transition:transform .15s; }
+.toggle.leaf { color:#45475a; }
+.key { color:#89b4fa; font-weight:600; }
+.label { color:#f5e0dc; font-weight:600; }
+.val { color:#a6e3a1; white-space:pre-wrap; word-break:break-all; }
+.val.num { color:#fab387; }
+.val.bool { color:#cba6f7; }
+.val.null { color:#6c7086; }
+.type-tag { font-size:11px; color:#6c7086; background:#313244; border-radius:3px; padding:0 4px; }
+.children { overflow:hidden; transition:max-height .18s ease; }
+.children.collapsed { display:none; }
+/* detail panel */
+#panel { width:380px; flex-shrink:0; background:#181825; border:1px solid #313244; border-radius:8px; overflow:auto; padding:14px; opacity:0; transform:translateX(8px); transition:opacity .2s, transform .2s, width .3s; }
+#panel.show { opacity:1; transform:none; }
+#panel.wide { width:calc(100% - 260px); }
+#panel h2 { font-size:14px; color:#f5e0dc; margin-bottom:2px; word-break:break-all; }
+#panel .path { font-size:11px; color:#6c7086; margin-bottom:10px; word-break:break-all; }
+#panel .field { margin-bottom:8px; }
+#panel .fkey { font-size:11px; color:#89b4fa; font-weight:600; margin-bottom:1px; }
+#panel .fval { color:#cdd6f4; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.6; background:#1e1e2e; border-radius:4px; padding:5px 8px; border-left:2px solid #45475a; }
+#panel .fval a { color:#74c7ec; }
+#panel .arr-item { padding:3px 8px; border-left:2px solid #45475a; margin-bottom:3px; background:#1e1e2e; border-radius:4px; font-size:12px; white-space:pre-wrap; word-break:break-all; }
+#panel .placeholder { color:#585b70; text-align:center; padding:60px 0; font-size:12px; }
+#panel .copy-btn { float:right; font-size:11px; color:#a6adc8; background:#313244; border:none; border-radius:4px; padding:2px 8px; cursor:pointer; }
+#panel .copy-btn:hover { background:#45475a; color:#cdd6f4; }
+.expand-bar { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px; }
+.expand-bar button { font:11px/1 inherit; color:#a6adc8; background:#313244; border:1px solid #45475a; border-radius:4px; padding:3px 9px; cursor:pointer; transition:all .15s; }
+.expand-bar button:hover { background:#89b4fa; color:#1e1e2e; border-color:#89b4fa; transform:translateY(-1px); }
+.expand-bar button:active { transform:translateY(0); }
+.expand-bar button.on { background:#89b4fa; color:#1e1e2e; border-color:#89b4fa; }
+/* card grid */
+.card-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:10px; margin-top:8px; }
+.card { background:#1e1e2e; border:1px solid #313244; border-radius:6px; padding:10px 12px; transition:border-color .15s, box-shadow .15s; }
+.card:hover { border-color:#89b4fa; box-shadow:0 2px 12px rgba(137,180,250,.08); }
+.card-title { font-size:13px; font-weight:700; color:#f5e0dc; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #313244; }
+.card-row { display:flex; flex-direction:column; gap:1px; margin-bottom:5px; font-size:11px; line-height:1.5; }
+.card-row .ck { color:#89b4fa; font-weight:600; }
+.card-row .cv { color:#cdd6f4; word-break:break-all; white-space:pre-wrap; }
+.card-row .cv a { color:#74c7ec; }
+/* comparison table */
+.cmp-table { width:100%; border-collapse:collapse; margin-top:8px; font-size:11px; }
+.cmp-table th { position:sticky; top:0; background:#181825; color:#89b4fa; text-align:left; padding:5px 8px; border-bottom:1px solid #45475a; font-weight:600; white-space:nowrap; }
+.cmp-table td { padding:4px 8px; border-bottom:1px solid #313244; vertical-align:top; word-break:break-all; white-space:pre-wrap; max-width:300px; }
+.cmp-table tr:hover td { background:#313244; }
+.cmp-table .name-col { color:#f5e0dc; font-weight:600; white-space:nowrap; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <div id="drop">拖入 JSON 文件 / 点击选择</div>
+  <div id="info"></div>
+</div>
+<div id="main">
+  <div id="left"><div id="tree"></div></div>
+  <div id="panel"><div class="placeholder">← 点击节点查看详情</div></div>
+</div>
+<input type="file" id="file" accept=".json" hidden>
+<script>
+const drop=document.getElementById('drop'), file=document.getElementById('file'), tree=document.getElementById('tree'), info=document.getElementById('info'), panel=document.getElementById('panel');
+let activeRow=null, activeNode=null;
+drop.onclick=()=>file.click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};
+drop.ondragleave=()=>drop.classList.remove('over');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');load(e.dataTransfer.files[0])};
+file.onchange=()=>load(file.files[0]);
+
+function load(f){
+  if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{try{render(JSON.parse(r.result),f.name)}catch(e){tree.innerHTML='<span style="color:#f38ba8">解析失败: '+e.message+'</span>'}};
+  r.readAsText(f);
+}
+
+function render(data, fname){
+  tree.innerHTML='';
+  drop.classList.add('mini');
+  drop.textContent='重新选择文件…';
+  info.textContent=fname+' | 节点: '+countNodes(data);
+  tree.appendChild(buildNode(data,'root',0,true,[]));
+}
+
+function countNodes(o){
+  if(o===null||typeof o!=='object')return 1;
+  let c=1;
+  if(Array.isArray(o))o.forEach(v=>c+=countNodes(v));
+  else Object.values(o).forEach(v=>c+=countNodes(v));
+  return c;
+}
+
+function getLabel(obj){
+  if(obj&&typeof obj==='object'&&!Array.isArray(obj)){
+    if(obj.name)return String(obj.name);
+    if(obj.title)return String(obj.title);
+    if(obj.id)return String(obj.id);
+  }
+  return null;
+}
+
+/* ---- detail panel ---- */
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function linkify(s){
+  return esc(s).replace(/(https?:\/\/[^\s"']+)/g,'<a href="$1" target="_blank">$1</a>');
+}
+let panelMode='list'; // list | cards | table
+
+function showDetail(val,key,path,label){
+  const p=path.join(' › ')||'root';
+  const isObj=val!==null&&typeof val==='object';
+  const isArrOfObj=Array.isArray(val)&&val.length>0&&val[0]!==null&&typeof val[0]==='object';
+  let h='<button class="copy-btn" onclick="copyRaw()">复制JSON</button>';
+  h+='<h2>'+esc(label||key)+'</h2><div class="path">'+esc(p)+'</div>';
+  if(isObj){
+    h+='<div class="expand-bar">'
+      +'<button onclick="expandLevels(1)">展开一层</button>'
+      +'<button onclick="expandLevels(2)">展开两层</button>'
+      +'<button onclick="expandLevels(3)">展开三层</button>'
+      +'<button onclick="expandLevels(Infinity)">全部展开</button>'
+      +'<button onclick="expandLevels(0)">全部折叠</button>';
+    if(isArrOfObj){
+      h+=' <button class="'+(panelMode==='list'?'on':'')+'" onclick="switchView(\'list\')">列表</button>'
+        +'<button class="'+(panelMode==='cards'?'on':'')+'" onclick="switchView(\'cards\')">卡片</button>'
+        +'<button class="'+(panelMode==='table'?'on':'')+'" onclick="switchView(\'table\')">表格</button>';
+    }
+    h+='</div>';
+  }
+  // render body
+  if(panelMode==='cards'&&isArrOfObj){
+    h+=renderCards(val);
+    panel.classList.add('wide');
+  } else if(panelMode==='table'&&isArrOfObj){
+    h+=renderTable(val);
+    panel.classList.add('wide');
+  } else {
+    panel.classList.remove('wide');
+    h+=renderListBody(val,key,label);
+  }
+  panel.innerHTML=h;
+  panel.classList.add('show');
+  panel._raw=val;
+}
+
+function renderListBody(val,key,label){
+  let h='';
+  if(val===null||typeof val!=='object'){
+    h+='<div class="field"><div class="fkey">'+esc(String(key))+'</div><div class="fval">'+linkify(String(val))+'</div></div>';
+  } else if(Array.isArray(val)){
+    h+='<div class="field"><div class="fkey">数组 · '+val.length+' 项</div>';
+    val.forEach((item,i)=>{
+      if(item!==null&&typeof item==='object'){
+        h+='<div class="arr-item"><b>'+esc(getLabel(item)||('#'+i))+'</b> '+esc(JSON.stringify(item,null,1))+'</div>';
+      } else {
+        h+='<div class="arr-item">'+linkify(String(item))+'</div>';
+      }
+    });
+    h+='</div>';
+  } else {
+    Object.entries(val).forEach(([k,v])=>{
+      if(k==='name'&&label)return;
+      let txt;
+      if(v!==null&&typeof v==='object'){
+        txt=Array.isArray(v)?v.join('\n'):JSON.stringify(v,null,1);
+      } else txt=String(v);
+      h+='<div class="field"><div class="fkey">'+esc(k)+'</div><div class="fval">'+linkify(txt)+'</div></div>';
+    });
+  }
+  return h;
+}
+
+function renderCards(arr){
+  let h='<div class="card-grid">';
+  arr.forEach((item,i)=>{
+    const name=getLabel(item)||('#'+i);
+    h+='<div class="card"><div class="card-title">'+esc(name)+'</div>';
+    if(item!==null&&typeof item==='object'&&!Array.isArray(item)){
+      Object.entries(item).forEach(([k,v])=>{
+        if(k==='name'||k==='title'||k==='id')return;
+        let txt;
+        if(v===null) txt='null';
+        else if(Array.isArray(v)) txt=v.map(x=>typeof x==='object'?JSON.stringify(x):x).join('\n');
+        else if(typeof v==='object') txt=JSON.stringify(v,null,1);
+        else txt=String(v);
+        h+='<div class="card-row"><span class="ck">'+esc(k)+'</span><span class="cv">'+linkify(txt)+'</span></div>';
+      });
+    }
+    h+='</div>';
+  });
+  h+='</div>';
+  return h;
+}
+
+function renderTable(arr){
+  // collect all keys
+  const keySet=new Set();
+  arr.forEach(item=>{if(item&&typeof item==='object'&&!Array.isArray(item))Object.keys(item).forEach(k=>keySet.add(k))});
+  const keys=[...keySet].filter(k=>k!=='name'&&k!=='title'&&k!=='id');
+  let h='<table class="cmp-table"><thead><tr><th>名称</th>';
+  keys.forEach(k=>{h+='<th>'+esc(k)+'</th>'});
+  h+='</tr></thead><tbody>';
+  arr.forEach((item,i)=>{
+    const name=getLabel(item)||('#'+i);
+    h+='<tr><td class="name-col">'+esc(name)+'</td>';
+    keys.forEach(k=>{
+      const v=item?item[k]:undefined;
+      let txt;
+      if(v===undefined) txt='';
+      else if(v===null) txt='null';
+      else if(Array.isArray(v)) txt=v.map(x=>typeof x==='object'?JSON.stringify(x):x).join(', ');
+      else if(typeof v==='object') txt=JSON.stringify(v);
+      else txt=String(v);
+      h+='<td>'+linkify(txt)+'</td>';
+    });
+    h+='</tr>';
+  });
+  h+='</tbody></table>';
+  return h;
+}
+
+function switchView(mode){
+  panelMode=mode;
+  // re-render with current data
+  if(panel._raw!==undefined){
+    const h2=panel.querySelector('h2');
+    const pathEl=panel.querySelector('.path');
+    const title=h2?h2.textContent:'';
+    const pth=pathEl?pathEl.textContent:'';
+    showDetail(panel._raw,title,pth.split(' › '),title);
+  }
+}
+function copyRaw(){
+  if(panel._raw!==undefined) navigator.clipboard.writeText(JSON.stringify(panel._raw,null,2));
+}
+function expandLevels(n){
+  if(!activeNode)return;
+  setExpand(activeNode,n);
+  activeNode.scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+function setExpand(el,remaining){
+  const ch=el.querySelector(':scope > .children');
+  if(!ch)return;
+  const tog=el.querySelector(':scope > .row > .toggle');
+  if(remaining>0){
+    ch.classList.remove('collapsed');
+    if(tog)tog.textContent='▼';
+    ch.querySelectorAll(':scope > .node').forEach(nd=>setExpand(nd,remaining-1));
+  } else {
+    ch.classList.add('collapsed');
+    if(tog)tog.textContent='▶';
+  }
+}
+
+/* ---- tree ---- */
+function buildNode(val, key, depth, isRoot, path){
+  const wrap=document.createElement('div');
+  wrap.className='node'+(isRoot?' root':'');
+  const row=document.createElement('div');
+  row.className='row';
+  const tog=document.createElement('span');
+  const isObj=val!==null&&typeof val==='object';
+  const label=getLabel(val);
+  const curPath=isRoot?[]:[...path,key];
+
+  if(isObj){
+    tog.className='toggle';
+    tog.textContent='▼';
+    tog.onclick=e=>{
+      e.stopPropagation();
+      const ch=wrap.querySelector(':scope > .children');
+      const collapsed=ch.classList.toggle('collapsed');
+      tog.textContent=collapsed?'▶':'▼';
+    };
+  } else {
+    tog.className='toggle leaf';
+    tog.textContent='·';
+  }
+  row.appendChild(tog);
+
+  if(key!=='root'){
+    const k=document.createElement('span');
+    k.className='key';
+    k.textContent=key;
+    row.appendChild(k);
+  }
+
+  if(label){
+    const lb=document.createElement('span');
+    lb.className='label';
+    lb.textContent=label;
+    row.appendChild(lb);
+  }
+
+  if(isObj){
+    const tag=document.createElement('span');
+    tag.className='type-tag';
+    tag.textContent=Array.isArray(val)?'['+val.length+']':'{'+Object.keys(val).length+'}';
+    row.appendChild(tag);
+  } else {
+    const v=document.createElement('span');
+    v.className='val'+(typeof val==='number'?' num':typeof val==='boolean'?' bool':val===null?' null':'');
+    v.textContent=val===null?'null':String(val);
+    row.appendChild(v);
+  }
+
+  // 点击行 → 详情面板
+  row.onclick=()=>{
+    if(activeRow)activeRow.classList.remove('active');
+    row.classList.add('active');
+    activeRow=row;
+    activeNode=wrap;
+    showDetail(val,isRoot?'root':key,curPath,label);
+  };
+
+  wrap.appendChild(row);
+
+  if(isObj){
+    const ch=document.createElement('div');
+    ch.className='children'+(depth>=2?' collapsed':'');
+    if(depth>=2) tog.textContent='▶';
+    const entries=Array.isArray(val)?val.map((v,i)=>[i,v]):Object.entries(val);
+    entries.forEach(([k,v])=>{
+      if(k==='name'&&label)return;
+      ch.appendChild(buildNode(v,k,depth+1,false,curPath));
+    });
+    wrap.appendChild(ch);
+  }
+  return wrap;
+}
+</script>
+</body>
+</html>
