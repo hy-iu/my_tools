@@ -1,0 +1,105 @@
+{
+  "name": "dsh-vscode",
+  "displayName": "DSH for VS Code",
+  "description": "Run DeepSeek Harness (DSH) headless tasks from your editor selection or open file.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:dsh.runSelectionHeadless",
+    "onView:dsh.overview",
+    "onView:dsh.webui",
+    "onView:dsh.sessions"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "dsh.runSelectionHeadless",
+        "title": "Run Selection / File as Headless Task",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.showPanel",
+        "title": "Show DSH Panel (Status / Tasks)",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.refreshOverview",
+        "title": "Refresh Overview",
+        "category": "DSH",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dsh",
+          "title": "DSH",
+          "icon": "$(sparkle)"
+        }
+      ]
+    },
+    "views": {
+      "dsh": [
+        {
+          "id": "dsh.overview",
+          "name": "概览"
+        },
+        {
+          "id": "dsh.webui",
+          "name": "Web UI"
+        },
+        {
+          "id": "dsh.sessions",
+          "name": "会话"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DSH",
+      "properties": {
+        "dsh.executablePath": {
+          "type": "string",
+          "default": "",
+          "description": "Full path to the `dsh` executable. Leave empty to auto-detect (DSH_BIN, known Homebrew paths, then PATH)."
+        },
+        "dsh.home": {
+          "type": "string",
+          "default": "",
+          "description": "DSH data home directory. Leave empty to use $DSH_HOME, then ~/.dsh."
+        },
+        "dsh.webUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3080",
+          "description": "URL of the running DSH Web UI to embed (route A shell)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --target=node18 --external:vscode --format=cjs --outfile=dist/extension.js",
+    "build:watch": "esbuild src/extension.ts --bundle --platform=node --target=node18 --external:vscode --format=cjs --outfile=dist/extension.js --sourcemap --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run build && node scripts/package-vsix.cjs"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.2",
+    "yazl": "^2.5.1"
+  },
+  "dependencies": {
+    "js-yaml": "^4.3.1"
+  }
+}
