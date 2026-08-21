@@ -1,19 +1,17 @@
 # Accepted proposal — Multi-level agent cockpit (level model corrected)
 
-> This is the previously discussed architecture, saved with the one accepted correction:
-> `super` is the **super-position level**, and applications are their own **application level**.
-
 ## Level model (corrected)
 
 ```
-super-position level   the composite/overlay plane — the cockpit itself; projects all other levels together
-application level      codex / claude-code / antigravity / qoder / opencode / dsh / pi ...
-model level            GPT / Claude / Qwen / DeepSeek ... (context, capabilities, prices)
-cost level             OpenAI / OpenRouter / Bailian ... (keys, accounts, limits, actual billed usage)
-project level          repo / branch / directory
-subject level          math / GPU / compiler / ...
-problem level          a concrete task or thread
-knowledge level        reusable findings, decisions, patterns, notes
+super-position         the superposition of ALL levels — not a peer "level" of its own;
+                       it is where every level below is overlaid and can be crossed/visualized at once
+  ├─ application level   codex / claude-code / antigravity / qoder / opencode / dsh / pi ...
+  ├─ model level         GPT / Claude / Qwen / DeepSeek ... (context, capabilities, prices)
+  ├─ cost level          OpenAI / OpenRouter / Bailian ... (keys, accounts, limits, actual billed usage)
+  ├─ project level       repo / branch / directory
+  ├─ subject level       math / GPU / compiler / ...
+  ├─ problem level       a concrete task or thread
+  └─ knowledge level     reusable findings, decisions, patterns, notes
 ```
 
 ## Why cc-switch is close but not enough
