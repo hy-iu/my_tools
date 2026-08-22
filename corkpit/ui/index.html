@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cockpit · Multi-Agent Control</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="brand-dot"></span>
+    <h1>Cockpit</h1>
+    <span class="brand-sub">multi-agent control plane</span>
+  </div>
+  <nav id="tabs">
+    <button data-view="mission" class="active">Mission Control<kbd>1</kbd></button>
+    <button data-view="problems">Problems<kbd>2</kbd></button>
+    <button data-view="cost">Cost Flow<kbd>3</kbd></button>
+    <button data-view="knowledge">Knowledge<kbd>4</kbd></button>
+    <button data-view="adapters">Adapters<kbd>5</kbd></button>
+  </nav>
+  <div id="trace-bar" class="hidden">
+    <span class="trace-icon">⌖</span>
+    <span id="trace-label"></span>
+    <button id="trace-clear" title="clear trace (Esc)">✕</button>
+  </div>
+</header>
+
+<main>
+  <section id="view-mission" class="view">
+    <div id="kpi-strip"></div>
+    <div class="card chart-card">
+      <div class="chart-head">
+        <h3>Activity · last 28 days</h3>
+        <div class="seg">
+          <button data-dmetric="tokens" class="active">tokens</button>
+          <button data-dmetric="cost">cost</button>
+        </div>
+      </div>
+      <div id="daily-chart"></div>
+    </div>
+
+    <div class="toolbar">
+      <input id="q" type="search" placeholder="filter sessions — agent, model, project…  ( / )" autocomplete="off">
+      <select id="agent-filter"><option value="">all agents</option></select>
+      <label class="check"><input type="checkbox" id="active-only"> active only</label>
+      <span class="spacer"></span>
+      <span id="mission-summary" class="hint"></span>
+      <button id="ingest-btn" title="re-parse ~/.pi sessions">⟳ re-ingest</button>
+    </div>
+
+    <div class="table-wrap card">
+      <table id="sessions-table">
+        <thead>
+          <tr>
+            <th class="w-dot"></th>
+            <th data-sort="agent_id">agent</th>
+            <th data-sort="model_id">model</th>
+            <th data-sort="cwd">project</th>
+            <th data-sort="turns" class="num">turns</th>
+            <th data-sort="tool_calls" class="num">tools</th>
+            <th data-sort="tokens" class="num">tokens</th>
+            <th data-sort="cost_total" class="num">cost</th>
+            <th data-sort="last_activity">last activity</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="no-sessions" class="hint hidden">no sessions match</div>
+    </div>
+  </section>
+
+  <section id="view-problems" class="view hidden">
+    <form id="problem-form" class="card inline-form">
+      <h3>New problem</h3>
+      <input name="title" placeholder="problem title" required>
+      <input name="subject" placeholder="subject (math / GPU / compiler …)" list="subject-list">
+      <datalist id="subject-list"></datalist>
+      <button type="submit">Add</button>
+    </form>
+    <div id="problem-list" class="card-grid"></div>
+  </section>
+
+  <section id="view-cost" class="view hidden">
+    <div class="toolbar">
+      <div class="seg">
+        <label><input type="radio" name="metric" value="tokens" checked> tokens</label>
+        <label><input type="radio" name="metric" value="cost"> cost</label>
+      </div>
+      <span class="hint">provider → model → application → project · click a node to trace across all views</span>
+    </div>
+    <div id="sankey" class="card chart-card"></div>
+  </section>
+
+  <section id="view-knowledge" class="view hidden">
+    <form id="note-form" class="card inline-form">
+      <h3>New knowledge note</h3>
+      <input name="title" placeholder="title" required>
+      <textarea name="body" placeholder="findings, decisions, patterns (markdown ok)"></textarea>
+      <input name="tags" placeholder="tags, comma separated">
+      <button type="submit">Add</button>
+    </form>
+    <div id="note-list" class="card-grid"></div>
+  </section>
+
+  <section id="view-adapters" class="view hidden">
+    <p class="hint pad">route = switch an application's provider/model in one click; a timestamped backup of its config is written first.</p>
+    <div id="adapter-cards"></div>
+  </section>
+</main>
+
+<aside id="drawer" class="hidden">
+  <div id="drawer-body"></div>
+</aside>
+<div id="tooltip" class="hidden"></div>
+<div id="toast" class="hidden"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
