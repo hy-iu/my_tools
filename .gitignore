@@ -7,3 +7,5 @@ cockpit-vscode/node_modules/
 cockpit-vscode/dist/
 corkpit/tray-debug.log
 corkpit/.probe-cc4.mjs
+corkpit/scripts/Browser Screenshot*.png
+corkpit/docs/images/_raw_*.png
