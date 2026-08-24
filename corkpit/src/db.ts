@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-  cost_total REAL NOT NULL DEFAULT 0
+  cost_total REAL NOT NULL DEFAULT 0,
+  provider_locked INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -119,5 +120,10 @@ export function openDb(dbPath: string = DB_PATH): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  // migrate: manual provider assignments should survive re-ingest
+  const sessCols = db.prepare(`PRAGMA table_info(sessions)`).all().map((c: any) => c.name);
+  if (!sessCols.includes('provider_locked')) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN provider_locked INTEGER NOT NULL DEFAULT 0`);
+  }
   return db;
 }

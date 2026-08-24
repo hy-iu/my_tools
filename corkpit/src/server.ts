@@ -4,11 +4,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DatabaseSync } from 'node:sqlite';
 import { adapters, getAdapter } from './adapters/index.js';
-import { ingestPiSessions } from './ingest/pi.js';
+import { ingestAll } from './ingest/all.js';
 import { syncRegistry } from './ingest/registry.js';
+import { discoverCapabilities, mcpUsage } from './capabilities.js';
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui');
 const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+
+function projName(cwd: string | null | undefined): string {
+  return (cwd ?? '?').split(/[\/\\]/).filter(Boolean).pop() || cwd || '?';
+}
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -75,7 +80,7 @@ function sankeyData(db: DatabaseSync, metric: 'tokens' | 'cost') {
     const p = node(`p:${r.provider_id ?? '?'}`, r.provider_id ?? 'unknown', 0);
     const m = node(`m:${r.model_id ?? '?'}`, r.model_id ?? 'unknown', 1);
     const a = node(`a:${r.agent_id}`, r.agent_id, 2);
-    const proj = (r.cwd ?? '').split('/').filter(Boolean).pop() || r.cwd || '?';
+    const proj = projName(r.cwd);
     const pr = node(`j:${r.cwd ?? '?'}`, proj, 3);
     p.value += v; m.value += v; a.value += v; pr.value += v;
     addLink(p.id, m.id, v);
@@ -112,9 +117,12 @@ export function createServer(db: DatabaseSync): http.Server {
         return json(res, result.ok ? 200 : 400, result);
       }
       if (route === 'POST /api/ingest') {
-        const r = ingestPiSessions(db);
+        const r = ingestAll(db);
         syncRegistry(db);
         return json(res, 200, { ok: true, ...r });
+      }
+      if (route === 'GET /api/capabilities') {
+        return json(res, 200, { apps: discoverCapabilities(), mcpUsage: mcpUsage(db) });
       }
       if (route === 'GET /api/sessions') {
         return json(res, 200, sessionRows(db));
@@ -211,6 +219,80 @@ export function createServer(db: DatabaseSync): http.Server {
         }
         return json(res, 200, { ok: true, id: noteId });
       }
+      if (route === 'GET /api/health') {
+        const active = db.prepare(`
+          SELECT COUNT(*) AS n FROM sessions
+          WHERE last_activity IS NOT NULL
+            AND (julianday('now') - julianday(last_activity)) * 86400000 < ${ACTIVE_WINDOW_MS}`).get() as any;
+        const today = db.prepare(`
+          SELECT COALESCE(SUM(cost_total), 0) AS cost,
+            COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + reasoning_tokens), 0) AS tokens
+          FROM sessions WHERE date(last_activity) = date('now')`).get() as any;
+        const agentRows = db.prepare(`
+          SELECT agent_id,
+            SUM(CASE WHEN last_activity IS NOT NULL
+              AND (julianday('now') - julianday(last_activity)) * 86400000 < ${ACTIVE_WINDOW_MS}
+              THEN 1 ELSE 0 END) AS active,
+            COUNT(*) AS sessions,
+            MAX(last_activity) AS last_activity
+          FROM sessions GROUP BY agent_id ORDER BY active DESC, last_activity DESC`).all();
+        return json(res, 200, {
+          ok: true,
+          active: active.n ?? 0,
+          todayCost: today.cost ?? 0,
+          todayTokens: today.tokens ?? 0,
+          agents: agentRows,
+          apps: adapters.map((a) => a.id),
+          version: '0.1.0',
+        });
+      }
+      if (route === 'GET /api/providers') {
+        // picker candidates: registered provider accounts + any provider id
+        // seen on sessions (so user can re-apply a previously seen one).
+        const acc = db.prepare(`SELECT id, display_name, base_url, key_source FROM provider_accounts ORDER BY display_name`).all() as any[];
+        const seen = new Set(acc.map((a) => a.id));
+        const fromSessions = (db.prepare(`SELECT DISTINCT provider_id FROM sessions WHERE provider_id IS NOT NULL AND provider_id != '' ORDER BY provider_id`).all() as any[])
+          .filter((r) => !seen.has(r.provider_id))
+          .map((r) => ({ id: r.provider_id, display_name: r.provider_id, base_url: null, key_source: null }));
+        return json(res, 200, [...acc, ...fromSessions]);
+      }
+      if (route === 'POST /api/session-provider') {
+        // manually assign an account to a set of sessions. A never-seen
+        // provider is remembered so it appears in the picker next time.
+        // Reset (reset=true or providerId === '__reset__') drops any manual
+        // assignment, unlocks the sessions, and RE-READS the config: the
+        // ingesters re-derive the provider from each session's source data.
+        const body = await readBody(req);
+        const ids = Array.isArray(body.sessionIds) ? body.sessionIds.filter((x: unknown) => typeof x === 'string' && x) : [];
+        if (!ids.length) return json(res, 400, { ok: false, message: 'no sessionIds' });
+        const reset = body.reset === true || body.providerId === '__reset__' || body.providerId === '__clear__';
+        db.exec('BEGIN');
+        try {
+          const ph = ids.map(() => '?').join(',');
+          const r = reset
+            ? db.prepare(`UPDATE sessions SET provider_id = NULL, provider_locked = 0 WHERE id IN (${ph})`).run(...ids)
+            : (() => {
+                const providerId = typeof body.providerId === 'string' ? body.providerId.trim() : '';
+                if (!providerId) throw new Error('providerId required');
+                const exists = db.prepare(`SELECT 1 FROM provider_accounts WHERE id = ?`).get(providerId);
+                if (!exists) {
+                  const display = typeof body.displayName === 'string' && body.displayName.trim() ? body.displayName.trim() : providerId;
+                  db.prepare(`INSERT INTO provider_accounts (id, display_name) VALUES (?, ?)`).run(providerId, display);
+                }
+                return db.prepare(`UPDATE sessions SET provider_id = ?, provider_locked = 1 WHERE id IN (${ph})`).run(providerId, ...ids);
+              })();
+          db.exec('COMMIT');
+          if (reset) {
+            // really "reset config read": let the ingesters re-derive them.
+            ingestAll(db);
+            syncRegistry(db);
+          }
+          return json(res, 200, { ok: true, updated: r.changes, reingested: reset });
+        } catch (e) {
+          db.exec('ROLLBACK');
+          return json(res, 400, { ok: false, message: String(e) });
+        }
+      }
       if (route === 'GET /api/overview') {
         return json(res, 200, {
           agents: db.prepare(`SELECT * FROM agents`).all(),
@@ -231,7 +313,9 @@ export function createServer(db: DatabaseSync): http.Server {
       }
       if (existsSync(filePath)) {
         const type = filePath.endsWith('.js') ? 'text/javascript' : filePath.endsWith('.css') ? 'text/css' : 'text/html';
-        res.writeHead(200, { 'content-type': `${type}; charset=utf-8` });
+        // never cache: local tool, files change between edits; no-store also
+        // makes a hard reload (Ctrl+F5) unnecessary.
+        res.writeHead(200, { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store' });
         return res.end(readFileSync(filePath));
       }
       return json(res, 404, { ok: false, message: 'not found' });

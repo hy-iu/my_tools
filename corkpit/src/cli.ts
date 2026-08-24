@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { openDb } from './db.js';
 import { adapters, getAdapter } from './adapters/index.js';
-import { ingestPiSessions } from './ingest/pi.js';
+import { ingestAll } from './ingest/all.js';
 import { syncRegistry } from './ingest/registry.js';
 import { createServer } from './server.js';
+import { runTray } from './tray.js';
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -17,7 +18,9 @@ function usage(): void {
 
 commands:
   serve [--port 4177]            start local web UI + API
-  ingest                         parse pi sessions into the store, sync registry
+  tray [--port 4177]             Windows tray host: background server + status icon,
+                                 menu for panel/ingest/dsh update check/dsh web
+  ingest                         parse pi/dsh/claude/codex/opencode sessions into the store, sync registry
   adapters                       print current config of every adapted application
   route --app <id> --provider <id> --model <id>
                                  switch an application's model/provider
@@ -30,9 +33,17 @@ apps: ${adapters.map((a) => a.id).join(', ')}`);
 const db = openDb();
 
 switch (command) {
+  case 'tray': {
+    const port = Number(flag('port') ?? 4177);
+    ingestAll(db);
+    syncRegistry(db);
+    db.close();
+    void runTray(port);
+    break;
+  }
   case 'serve': {
     const port = Number(flag('port') ?? 4177);
-    ingestPiSessions(db);
+    ingestAll(db);
     syncRegistry(db);
     createServer(db).listen(port, '127.0.0.1', () => {
       console.log(`cockpit running at http://127.0.0.1:${port}`);
@@ -40,9 +51,12 @@ switch (command) {
     break;
   }
   case 'ingest': {
-    const r = ingestPiSessions(db);
+    const r = ingestAll(db);
     syncRegistry(db);
     console.log(`ingested ${r.sessions} sessions from ${r.files} files`);
+    for (const [agent, s] of Object.entries(r.byAgent)) {
+      console.log(`  ${agent.padEnd(12)} ${String(s.sessions).padStart(4)} sessions / ${s.files} files`);
+    }
     break;
   }
   case 'adapters': {

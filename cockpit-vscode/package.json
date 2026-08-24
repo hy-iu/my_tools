@@ -1,0 +1,90 @@
+{
+  "name": "cockpit-vscode",
+  "displayName": "Cockpit",
+  "description": "Multi-agent cockpit inside VS Code — sessions, cost flow, adapters, one-click routing",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cockpit",
+          "title": "Cockpit",
+          "icon": "resources/cockpit.svg"
+        }
+      ]
+    },
+    "views": {
+      "cockpit": [
+        {
+          "type": "webview",
+          "id": "cockpit.panel",
+          "name": "Control plane"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cockpit.revealPanel",
+        "title": "Cockpit: Show sidebar panel"
+      },
+      {
+        "command": "cockpit.openInEditor",
+        "title": "Cockpit: Open panel in editor"
+      },
+      {
+        "command": "cockpit.openInBrowser",
+        "title": "Cockpit: Open in browser"
+      },
+      {
+        "command": "cockpit.startServer",
+        "title": "Cockpit: Start server"
+      },
+      {
+        "command": "cockpit.startTray",
+        "title": "Cockpit: Start system tray (Windows)"
+      }
+    ],
+    "configuration": {
+      "title": "Cockpit",
+      "properties": {
+        "cockpit.port": {
+          "type": "number",
+          "default": 4177,
+          "description": "Port of the cockpit local server."
+        },
+        "cockpit.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the cockpit server automatically when it is not reachable."
+        },
+        "cockpit.home": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the cockpit (corkpit) checkout. Defaults to a 'corkpit' folder inside the workspace or next to this extension."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.6.0"
+  }
+}

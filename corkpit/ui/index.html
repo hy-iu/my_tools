@@ -14,11 +14,12 @@
     <span class="brand-sub">multi-agent control plane</span>
   </div>
   <nav id="tabs">
-    <button data-view="mission" class="active">Mission Control<kbd>1</kbd></button>
-    <button data-view="problems">Problems<kbd>2</kbd></button>
-    <button data-view="cost">Cost Flow<kbd>3</kbd></button>
-    <button data-view="knowledge">Knowledge<kbd>4</kbd></button>
-    <button data-view="adapters">Adapters<kbd>5</kbd></button>
+    <button data-view="mission" class="active">Mission Control<kbd title="sessions" data-cnt></kbd></button>
+    <button data-view="problems">Problems<kbd title="problems" data-cnt></kbd></button>
+    <button data-view="cost">Cost Flow<kbd title="sankey nodes" data-cnt></kbd></button>
+    <button data-view="knowledge">Knowledge<kbd title="notes" data-cnt></kbd></button>
+    <button data-view="adapters">Adapters<kbd title="adapters" data-cnt></kbd></button>
+    <button data-view="capabilities">Skills &amp; MCP<kbd title="mcp + skills" data-cnt></kbd></button>
   </nav>
   <div id="trace-bar" class="hidden">
     <span class="trace-icon">⌖</span>
@@ -42,20 +43,31 @@
     </div>
 
     <div class="toolbar">
-      <input id="q" type="search" placeholder="filter sessions — agent, model, project…  ( / )" autocomplete="off">
+      <input id="q" type="search" placeholder="filter sessions — agent, model, provider, project…  ( / )" autocomplete="off">
       <select id="agent-filter"><option value="">all agents</option></select>
       <label class="check"><input type="checkbox" id="active-only"> active only</label>
       <span class="spacer"></span>
       <span id="mission-summary" class="hint"></span>
+      <span id="unknown-count" class="hint" title="sessions without a provider">unknown: <b id="unknown-n">0</b></span>
       <button id="ingest-btn" title="re-parse ~/.pi sessions">⟳ re-ingest</button>
+    </div>
+
+    <div id="provider-batch" class="toolbar hidden">
+      <span class="hint">selected <b id="sel-count">0</b></span>
+      <select id="pb-provider" title="provider to apply to the selected rows"></select>
+      <input id="pb-new" type="text" placeholder="new provider id" style="display:none">
+      <button id="pb-apply" class="primary">Set for selected</button>
+      <button id="pb-reset" title="unlock & re-read the config from the source for the selected rows">↺ reset (re-read config)</button>
     </div>
 
     <div class="table-wrap card">
       <table id="sessions-table">
         <thead>
           <tr>
+            <th class="w-chk"><input type="checkbox" id="chk-all" title="select all"></th>
             <th class="w-dot"></th>
             <th data-sort="agent_id">agent</th>
+            <th data-sort="provider_id">provider</th>
             <th data-sort="model_id">model</th>
             <th data-sort="cwd">project</th>
             <th data-sort="turns" class="num">turns</th>
@@ -107,6 +119,15 @@
   <section id="view-adapters" class="view hidden">
     <p class="hint pad">route = switch an application's provider/model in one click; a timestamped backup of its config is written first.</p>
     <div id="adapter-cards"></div>
+  </section>
+
+  <section id="view-capabilities" class="view hidden">
+    <p class="hint pad">MCP servers &amp; skills discovered from each application's real config (read-only). Usage below counts <span class="mono">mcp__server__tool</span> calls across ingested sessions.</p>
+    <div id="caps-apps" class="card-grid"></div>
+    <div class="card chart-card" style="margin-top:14px">
+      <div class="chart-head"><h3>MCP tool usage</h3><span class="hint">from ingested sessions</span></div>
+      <div id="mcp-usage"></div>
+    </div>
   </section>
 </main>
 

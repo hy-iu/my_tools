@@ -1,8 +1,8 @@
 // ---------- utils ----------
 const $ = (sel) => document.querySelector(sel);
 const state = {
-  sessions: [], overview: null, problems: null, knowledge: null, adapters: [],
-  daily: [], trace: null, sort: { key: 'last_activity', dir: 'desc' }, dmetric: 'tokens',
+  sessions: [], overview: null, problems: null, knowledge: null, adapters: [], capabilities: null, providers: [],
+  daily: [], trace: null, sort: { key: 'last_activity', dir: 'desc' }, dmetric: 'tokens', sankeyNodes: 0,
 };
 
 async function api(path, opts) {
@@ -35,7 +35,9 @@ const fmtTime = (ts) => {
   return Math.floor(s / 86400) + 'd ago';
 };
 const fmtAbs = (ts) => (parseTs(ts) ?? new Date()).toLocaleString();
-const projName = (cwd) => (cwd || '?').split('/').filter(Boolean).pop() || cwd || '?';
+const HOME_DIR_RE = /^(?:\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\\Users\\[^\\]+)/;
+const homeShort = (p) => String(p).replace(HOME_DIR_RE, '~');
+const projName = (cwd) => (cwd || '?').split(/[\/\\]/).filter(Boolean).pop() || cwd || '?';
 
 const PALETTE = ['#58a6ff', '#3fb950', '#d2a8ff', '#d29922', '#ff7b9c', '#79c0ff', '#56d364', '#e3b341'];
 function agentColor(agent) {
@@ -90,7 +92,12 @@ function toast(msg, kind = 'ok') {
 }
 
 // ---------- tabs & keyboard ----------
-const VIEW_IDS = ['mission', 'problems', 'cost', 'knowledge', 'adapters'];
+const VIEW_IDS = ['mission', 'problems', 'cost', 'knowledge', 'adapters', 'capabilities'];
+function parseHash() {
+  const h = (location.hash || '').replace(/^#/, '');
+  const [view, qs] = h.split('?');
+  return { view, params: new URLSearchParams(qs || '') };
+}
 function showView(name) {
   if (!VIEW_IDS.includes(name)) name = 'mission';
   document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('active', x.dataset.view === name));
@@ -114,7 +121,7 @@ document.addEventListener('keydown', (e) => {
   if (typing) return;
   if (e.key === '/') { e.preventDefault(); showView('mission'); $('#q').focus(); return; }
   const i = Number(e.key);
-  if (i >= 1 && i <= 5) { location.hash = VIEW_IDS[i - 1]; showView(VIEW_IDS[i - 1]); }
+  if (i >= 1 && i <= VIEW_IDS.length) { location.hash = VIEW_IDS[i - 1]; showView(VIEW_IDS[i - 1]); }
 });
 
 // ---------- trace ----------
@@ -183,6 +190,7 @@ async function loadMission() {
   renderKpis();
   renderDaily();
   renderMission();
+  updateTabCounts();
 }
 
 function sparkline(values, color) {
@@ -280,7 +288,7 @@ function filteredSessions() {
     if (agent && s.agent_id !== agent) return false;
     if (activeOnly && !s.active) return false;
     if (q) {
-      const hay = [s.agent_id, s.model_id, s.provider_id, s.cwd, s.id].join(' ').toLowerCase();
+      const hay = [s.agent_id, s.model_id, s.provider_id ?? 'unknown', s.cwd, s.id].join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -326,19 +334,36 @@ function renderMission() {
     const tr = document.createElement('tr');
     tr.dataset.id = s.id;
     tr.innerHTML = `
+      <td><input type="checkbox" class="row-chk" data-id="${escAttr(s.id)}" ${selectedIds.has(s.id) ? 'checked' : ''}></td>
       <td><span class="dot ${s.active ? 'active' : ''}" title="${s.active ? 'active' : 'idle'}"></span></td>
-      <td>${badge(s.agent_id)}</td>
-      <td class="mono" title="${escAttr(s.model_id ?? '?')}${s.provider_id ? ' @ ' + escAttr(s.provider_id) : ''}">${esc(s.model_id ?? '?')}</td>
-      <td title="${escAttr(s.cwd ?? '')}">${esc(projName(s.cwd))}</td>
+      <td data-trace-key="agent" data-trace-val="${escAttr(s.agent_id)}" title="click to trace agent">${badge(s.agent_id)}</td>
+      <td class="prov-cell"><select class="prov-sel" data-id="${escAttr(s.id)}" title="provider for this session">${providerOptions(s.provider_id)}</select></td>
+      <td class="mono" data-trace-key="model" data-trace-val="${escAttr(s.model_id ?? '?')}" title="${escAttr(s.model_id ?? '?')}${s.provider_id ? ' @ ' + escAttr(s.provider_id) : ''} · click to trace model">${esc(s.model_id ?? '?')}</td>
+      <td data-trace-key="project" data-trace-val="${escAttr(s.cwd ?? '?')}" title="${escAttr(s.cwd ?? '')} · click to trace project">${esc(projName(s.cwd))}</td>
       <td class="num">${s.turns}</td>
       <td class="num">${s.tool_calls}</td>
       <td class="num">${fmtTokens(sessionTokens(s))}</td>
       <td class="num">${fmtCost(s.cost_total)}</td>
       <td class="dim" title="${escAttr(fmtAbs(s.last_activity))}">${esc(fmtTime(s.last_activity))}</td>`;
-    tr.addEventListener('click', () => openDrawer(s.id));
+    tr.addEventListener('click', (ev) => {
+      if (ev.target.closest('select') || ev.target.closest('.row-chk')) return;
+      const cell = ev.target.closest('td[data-trace-key]');
+      if (cell) {
+        ev.stopPropagation();
+        const key = cell.dataset.traceKey;
+        const val = cell.dataset.traceVal;
+        setTrace({ label: key === 'project' ? projName(val) : val, [key]: val === '?' ? undefined : val });
+        toast('trace set — related rows & flow are highlighted');
+        return;
+      }
+      openDrawer(s.id);
+    });
     tbody.appendChild(tr);
   }
   applyTrace();
+  $('#pb-provider').innerHTML = batchProviderOptions();
+  updateUnknownCount();
+  updateSelUI();
 }
 
 document.querySelectorAll('#sessions-table th[data-sort]').forEach((th) => th.addEventListener('click', () => {
@@ -483,6 +508,8 @@ async function renderSankey() {
   const token = ++sankeySeq;
   const data = await api('sankey?metric=' + metric);
   if (token !== sankeySeq) return; // stale response superseded
+  state.sankeyNodes = data.nodes.length;
+  updateTabCounts();
   const container = $('#sankey');
   container.innerHTML = '';
   if (!data.nodes.length) {
@@ -564,6 +591,7 @@ document.querySelectorAll('input[name="metric"]').forEach((r) => r.addEventListe
 async function loadProblems() {
   state.problems = await api('problems');
   renderProblems();
+  updateTabCounts();
 }
 
 function renderProblems() {
@@ -614,6 +642,7 @@ $('#problem-form').addEventListener('submit', async (e) => {
 async function loadKnowledge() {
   state.knowledge = await api('knowledge');
   renderKnowledge();
+  updateTabCounts();
 }
 
 function renderKnowledge() {
@@ -647,6 +676,7 @@ $('#note-form').addEventListener('submit', async (e) => {
 async function loadAdapters() {
   state.adapters = await api('adapters');
   renderAdapters();
+  updateTabCounts();
 }
 
 function renderAdapters() {
@@ -660,7 +690,7 @@ function renderAdapters() {
         <h3>${badge(s.app)} ${esc(s.displayName)}</h3>
         <span class="current">${s.current ? `${esc(s.current.providerId)} / ${esc(s.current.modelId)}` : 'not configured'}</span>
       </div>
-      <div class="kv">config ${s.configPaths.filter(Boolean).map((p) => `<b>${esc(p.replace(/^\/Users\/[^/]+/, '~'))}</b>`).join(', ')}</div>
+      <div class="kv">config ${s.configPaths.filter(Boolean).map((p) => `<b>${esc(homeShort(p))}</b>`).join(', ')}</div>
       <div class="kv">providers: ${s.providers.map((p) => `<b>${esc(p.id)}</b>`).join(', ') || '—'}</div>
       <div class="kv">models discovered: <b>${s.models.length}</b>${s.routeSupported ? '' : ' · <span class="dim">route not supported</span>'}</div>
       ${s.error ? `<div class="kv" style="color:var(--amber)">error: ${esc(s.error)}</div>` : ''}`;
@@ -697,14 +727,169 @@ function renderAdapters() {
   }
 }
 
+// ---------- capabilities (skills & mcp) ----------
+async function loadCapabilities() {
+  state.capabilities = await api('capabilities');
+  renderCapabilities();
+  updateTabCounts();
+}
+
+function renderCapabilities() {
+  const wrap = $('#caps-apps');
+  wrap.innerHTML = '';
+  const { apps, mcpUsage } = state.capabilities ?? { apps: [], mcpUsage: [] };
+  for (const c of apps) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const servers = c.mcpServers ?? [];
+    const skills = c.skills ?? [];
+    card.innerHTML = `
+      <div class="adapter-head">
+        <h3>${badge(c.app)}</h3>
+        <span class="hint">${servers.length} mcp · ${skills.length} skills</span>
+      </div>
+      ${servers.length ? servers.map((s) => `
+        <div class="kv"><span class="tag">${esc(s.transport)}</span>${s.scope === 'project' ? `<span class="tag">project</span>` : ''}
+          <b>${esc(s.name)}</b> <span class="mono dim" title="${escAttr(s.target)}">${esc((s.target || '').slice(0, 72))}</span>
+          ${s.project ? `<div class="dim" style="font-size:11px">${esc(homeShort(s.project))}</div>` : ''}</div>`).join('') : '<div class="kv dim">no MCP servers configured</div>'}
+      ${skills.length ? `<div class="kv">skills: ${skills.map((s) => `<span class="tag">${esc(s.name)}</span>`).join('')}</div>` : ''}
+      ${c.notes ? `<div class="kv dim">${esc(c.notes)}</div>` : ''}`;
+    wrap.appendChild(card);
+  }
+
+  const usage = $('#mcp-usage');
+  usage.innerHTML = '';
+  if (!mcpUsage.length) {
+    usage.innerHTML = '<div class="hint">no mcp__server__tool calls ingested yet</div>';
+    return;
+  }
+  const max = Math.max(...mcpUsage.map((u) => u.count), 1);
+  for (const u of mcpUsage.slice(0, 15)) {
+    const row = document.createElement('div');
+    row.className = 'tool-row';
+    row.innerHTML = `
+      <span class="mono" title="mcp__${escAttr(u.server)}__${escAttr(u.tool)}">
+        <span class="tag">${esc(u.server)}</span> ${esc(u.tool)}</span>
+      <span style="flex:1;margin:0 10px;height:6px;background:var(--faint);border-radius:3px;overflow:hidden">
+        <span style="display:block;height:100%;width:${((u.count / max) * 100).toFixed(1)}%;background:var(--accent)"></span>
+      </span>
+      <span class="c">×${u.count}</span>`;
+    usage.appendChild(row);
+  }
+}
+
+// ---------- provider editing: per-row select + multi-select batch ----------
+let selectedIds = new Set();
+async function loadProviders() {
+  state.providers = await api('providers');
+  renderMission(); // refresh the per-row <select> options
+}
+function providerOptions(sel) {
+  return `<option value="">↺ auto (re-read config)</option>` +
+    state.providers.map((p) => `<option value="${escAttr(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.display_name ?? p.id)}</option>`).join('');
+}
+function batchProviderOptions() {
+  return `<option value="">— choose —</option>` +
+    state.providers.map((p) => `<option value="${escAttr(p.id)}">${esc(p.display_name ?? p.id)}</option>`).join('') +
+    `<option value="__new__">＋ add new…</option>`;
+}
+function updateSelUI() {
+  const n = selectedIds.size;
+  $('#sel-count').textContent = n;
+  $('#provider-batch').classList.toggle('hidden', n === 0);
+  const chks = [...document.querySelectorAll('.row-chk')];
+  const chkAll = $('#chk-all');
+  chkAll.checked = chks.length > 0 && chks.every((c) => c.checked);
+}
+function updateUnknownCount() {
+  $('#unknown-n').textContent = state.sessions.filter((s) => !s.provider_id).length;
+}
+async function applyProvider(ids, providerId) {
+  const r = await api('session-provider', { sessionIds: ids, providerId, displayName: providerId });
+  if (r.ok) {
+    const reset = providerId === '__reset__';
+    for (const id of ids) { const s = state.sessions.find((x) => x.id === id); if (s) s.provider_id = reset ? null : providerId; }
+    toast(reset ? `reset ${r.updated} session(s) → re-read config` : `set ${r.updated} session(s) → ${providerId}`, 'ok');
+    await loadProviders();
+    renderMission();
+  } else toast(r.message ?? 'failed', 'err');
+}
+$('#chk-all').addEventListener('change', () => {
+  const on = $('#chk-all').checked;
+  for (const c of document.querySelectorAll('.row-chk')) { c.checked = on; on ? selectedIds.add(c.dataset.id) : selectedIds.delete(c.dataset.id); }
+  updateSelUI();
+});
+$('#sessions-table tbody').addEventListener('change', async (ev) => {
+  if (ev.target.classList.contains('row-chk')) {
+    const id = ev.target.dataset.id;
+    ev.target.checked ? selectedIds.add(id) : selectedIds.delete(id);
+    updateSelUI();
+  } else if (ev.target.classList.contains('prov-sel')) {
+    const val = ev.target.value;
+    await applyProvider([ev.target.dataset.id], val === '' ? '__reset__' : val);
+  }
+});
+$('#pb-provider').addEventListener('change', () => {
+  $('#pb-new').style.display = $('#pb-provider').value === '__new__' ? '' : 'none';
+  if ($('#pb-provider').value !== '__new__') $('#pb-new').value = '';
+});
+$('#pb-apply').addEventListener('click', async () => {
+  if (!selectedIds.size) { toast('select some rows first', 'err'); return; }
+  const sel = $('#pb-provider').value;
+  let providerId;
+  if (sel === '__new__') { providerId = $('#pb-new').value.trim(); if (!providerId) { toast('type a provider id', 'err'); return; } }
+  else providerId = sel;
+  if (!providerId) { toast('choose a provider', 'err'); return; }
+  await applyProvider([...selectedIds], providerId);
+});
+$('#pb-reset').addEventListener('click', async () => {
+  if (!selectedIds.size) { toast('select some rows first', 'err'); return; }
+  await applyProvider([...selectedIds], '__reset__');
+});
+
+// ---------- tab record counts ----------
+async function loadSankeyCount() {
+  try {
+    const d = await api('sankey?metric=tokens');
+    state.sankeyNodes = d.nodes.length;
+  } catch {
+    state.sankeyNodes = 0;
+  }
+}
+function updateTabCounts() {
+  const caps = state.capabilities?.apps ?? [];
+  const capTotal = caps.reduce((n, c) => n + (c.mcpServers ?? []).length + (c.skills ?? []).length, 0);
+  const counts = {
+    mission: state.sessions.length,
+    problems: state.problems?.problems?.length ?? 0,
+    cost: state.sankeyNodes,
+    knowledge: state.knowledge?.notes?.length ?? 0,
+    adapters: state.adapters.length,
+    capabilities: capTotal,
+  };
+  document.querySelectorAll('#tabs button').forEach((b) => {
+    const kb = b.querySelector('kbd[data-cnt]');
+    if (kb) kb.textContent = String(counts[b.dataset.view] ?? 0);
+  });
+}
+
 // ---------- boot & auto refresh ----------
 async function loadAll() {
   await loadMission();
-  await Promise.all([loadProblems(), loadKnowledge(), loadAdapters()]);
+  await Promise.all([loadProblems(), loadKnowledge(), loadAdapters(), loadCapabilities(), loadSankeyCount(), loadProviders()]);
+  updateTabCounts();
 }
 (async function init() {
   await loadAll();
-  showView(location.hash.replace('#', '') || 'mission');
+  const { view, params } = parseHash();
+  showView(view || 'mission');
+  // deep link from the tray: #mission?agent=<id>
+  const urlAgent = params.get('agent');
+  if (urlAgent) {
+    showView('mission');
+    $('#agent-filter').value = urlAgent;
+    renderMission();
+  }
   setInterval(() => { if (document.visibilityState === 'visible') loadMission(); }, 30000);
   window.addEventListener('resize', () => { renderDaily(); if (!$('#view-cost').classList.contains('hidden')) renderSankey(); });
 })();

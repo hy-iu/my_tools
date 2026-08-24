@@ -122,7 +122,8 @@ export function ingestPiSessions(db: DatabaseSync, root: string = PI_SESSIONS_RO
     VALUES (?, 'pi', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       cwd = excluded.cwd, started_at = excluded.started_at, last_activity = excluded.last_activity,
-      provider_id = excluded.provider_id, model_id = excluded.model_id,
+      provider_id = CASE WHEN sessions.provider_locked = 1 THEN sessions.provider_id ELSE excluded.provider_id END,
+      model_id = excluded.model_id,
       turns = excluded.turns, tool_calls = excluded.tool_calls,
       input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
       cache_read_tokens = excluded.cache_read_tokens, cache_write_tokens = excluded.cache_write_tokens,
