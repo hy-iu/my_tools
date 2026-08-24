@@ -2,4 +2,8 @@
 .DS_Store
 __pycache__/
 *.pyc
-.venv-torchcodec/
+.venv*
+cockpit-vscode/node_modules/
+cockpit-vscode/dist/
+corkpit/tray-debug.log
+corkpit/.probe-cc4.mjs
