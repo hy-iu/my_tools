@@ -1,0 +1,57 @@
+#!/usr/bin/env zsh
+# 列出 PATH 中被覆盖的命令，自动忽略指向同一文件的软链/硬链重映射
+setopt null_glob
+
+# 1. 收集所有可执行文件名（避免 ls 多目录时的表头和空行问题）
+tmp=$(mktemp)
+for d in $path; do
+  [[ -d $d ]] || continue
+  for f in "$d"/*(N); do
+    [[ -f $f && -x $f ]] || continue
+    print -r -- "${f:t}" >> "$tmp"
+  done
+done
+
+# 2. 找出重名候选
+dups=$(sort "$tmp" | uniq -d)
+rm -f "$tmp"
+[[ -z "$dups" ]] && exit 0
+
+for cmd in ${(f)dups}; do
+  [[ -z "$cmd" ]] && continue
+  files=(${^path}/${cmd}(N))  # 所有 PATH 中同名文件
+  (( ${#files} == 0 )) && continue
+  # 过滤不存在/不可执行
+  exist=()
+  for f in $files; do [[ -x $f && -f $f ]] && exist+=($f); done
+  files=($exist)
+  (( ${#files} < 2 )) && continue
+
+  # 3. 按真实路径+inode 去重（忽略重映射）
+  typeset -A seen
+  uniq_files=()
+  uniq_reals=()
+  for f in $files; do
+    # realpath 兼容 macOS
+    real=$(realpath "$f" 2>/dev/null || greadlink -f "$f" 2>/dev/null || readlink -f "$f" 2>/dev/null || echo "$f")
+    inode=$(stat -f "%d:%i" "$f" 2>/dev/null || stat -c "%d:%i" "$f" 2>/dev/null || echo "$f")
+    key="${real}::${inode}"
+    # 也用 real 去重，防止 hardlink 误判
+    if [[ -z ${seen[$key]} && -z ${seen[$real]} ]]; then
+      seen[$key]=1
+      seen[$real]=1
+      uniq_files+=("$f")
+      uniq_reals+=("$real")
+    fi
+  done
+
+  (( ${#uniq_files} < 2 )) && continue
+
+  echo "=== $cmd ==="
+  for i in {1..${#uniq_files}}; do
+    printf "  %s -> %s\n" "${uniq_files[$i]}" "${uniq_reals[$i]}"
+  done
+  # 也显示当前生效的是哪个
+  echo "  * 生效: $(where -p "$cmd" 2>/dev/null | head -n1)"
+  echo
+done
