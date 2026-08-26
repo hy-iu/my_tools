@@ -1,6 +1,16 @@
 #!/usr/bin/env zsh
 # 列出 PATH 中被覆盖的命令，自动忽略指向同一文件的软链/硬链重映射
+# 用法: path-shadows [--all]   --all 同时报告 .dll/.so/.dylib 等库文件（默认跳过，避免噪音）
 setopt null_glob
+
+show_libs=0
+for arg in "$@"; do
+  case "$arg" in
+    --all|-a) show_libs=1 ;;
+    -h|--help) sed 's/^#\s\?//' "$0" | head -4; exit 0 ;;
+    *) print -u2 "未知参数: $arg"; exit 2 ;;
+  esac
+done
 
 # 1. 收集所有可执行文件名（避免 ls 多目录时的表头和空行问题）
 tmp=$(mktemp)
@@ -8,6 +18,9 @@ for d in $path; do
   [[ -d $d ]] || continue
   for f in "$d"/*(N); do
     [[ -f $f && -x $f ]] || continue
+    (( show_libs )) || case "${f:t}" in
+      *.dll|*.so|*.so.*|*.dylib) continue ;;
+    esac
     print -r -- "${f:t}" >> "$tmp"
   done
 done
@@ -19,27 +32,28 @@ rm -f "$tmp"
 
 for cmd in ${(f)dups}; do
   [[ -z "$cmd" ]] && continue
-  files=(${^path}/${cmd}(N))  # 所有 PATH 中同名文件
-  (( ${#files} == 0 )) && continue
-  # 过滤不存在/不可执行
-  exist=()
-  for f in $files; do [[ -x $f && -f $f ]] && exist+=($f); done
-  files=($exist)
+  # 逐目录测试而非对 ${cmd} 做 glob——避免文件名中的 [ ] * ? 被当模式解释而漏报
+  files=()
+  for d in $path; do
+    [[ -n "$d" && -f "$d/$cmd" && -x "$d/$cmd" ]] && files+=("$d/$cmd")
+  done
   (( ${#files} < 2 )) && continue
 
-  # 3. 按真实路径+inode 去重（忽略重映射）
+  # 3. 按真实路径 / inode 去重（软链解析到同一目标、硬链接共享 inode，均视为同一文件）
   typeset -A seen
   uniq_files=()
   uniq_reals=()
   for f in $files; do
     # realpath 兼容 macOS
     real=$(realpath "$f" 2>/dev/null || greadlink -f "$f" 2>/dev/null || readlink -f "$f" 2>/dev/null || echo "$f")
-    inode=$(stat -f "%d:%i" "$f" 2>/dev/null || stat -c "%d:%i" "$f" 2>/dev/null || echo "$f")
-    key="${real}::${inode}"
-    # 也用 real 去重，防止 hardlink 误判
-    if [[ -z ${seen[$key]} && -z ${seen[$real]} ]]; then
-      seen[$key]=1
+    # stat 语法须 GNU 优先：Linux 上 stat -f 是"文件系统状态"模式，
+    # BSD 语法不会失败但输出无关内容；macOS 上 stat -c 不存在，自然落到 BSD 分支
+    inode=$(stat -c "%d:%i" "$f" 2>/dev/null || stat -f "%d:%i" "$f" 2>/dev/null || echo "")
+    # 硬链接的真实路径各不相同但 inode 相同，因此 inode 必须单独作为键，
+    # 不能与真实路径拼接，否则硬链接永远匹配不上
+    if [[ -z "${seen[$real]}" && ( -z "$inode" || -z "${seen[$inode]}" ) ]]; then
       seen[$real]=1
+      [[ -n "$inode" ]] && seen[$inode]=1
       uniq_files+=("$f")
       uniq_reals+=("$real")
     fi

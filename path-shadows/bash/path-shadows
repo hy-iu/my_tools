@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# 列出 PATH 中被覆盖的同名可执行文件，自动忽略指向同一文件的软链/硬链重映射。
+# 兼容 bash 3.2+（macOS 自带 bash 可直接运行）；Git Bash / Linux 均可用。
+#
+# 用法: path-shadows [--all]
+#   --all   同时报告 .dll/.so/.dylib 等库文件（默认跳过，避免噪音）
+set -u
+shopt -s nullglob
+
+show_libs=0
+for arg in "$@"; do
+  case "$arg" in
+    --all|-a) show_libs=1 ;;
+    -h|--help) grep '^#' "$0" | sed 's/^#\s\?//'; exit 0 ;;
+    *) printf '未知参数: %s\n用法: %s [--all]\n' "$arg" "$0" >&2; exit 2 ;;
+  esac
+done
+
+# 1. 按 shell 规则切分 PATH（冒号分隔；空条目=当前目录，后面用 -d 测试自然跳过）
+IFS=: read -r -a dirs <<<"$PATH"
+
+# 2. 收集所有可执行文件名，找出重名候选
+tmp=$(mktemp) || exit 1
+trap 'rm -f "$tmp"' EXIT
+
+for d in "${dirs[@]}"; do
+  [ -d "$d" ] || continue
+  for f in "$d"/*; do
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    [ "$show_libs" -eq 1 ] || case "${f##*/}" in
+      *.dll|*.so|*.so.*|*.dylib) continue ;;
+    esac
+    printf '%s\n' "${f##*/}" >>"$tmp"
+  done
+done
+
+dups=$(sort "$tmp" | uniq -d)
+[ -n "$dups" ] || exit 0
+
+# 3. 逐个命令核对：按真实路径 / inode 去重
+#    （软链解析到同一目标、硬链接共享 inode，均视为同一文件的映射）
+while IFS= read -r cmd; do
+  [ -n "$cmd" ] || continue
+
+  files=()
+  for d in "${dirs[@]}"; do
+    p="$d/$cmd"
+    [ -n "$d" ] && [ -f "$p" ] && [ -x "$p" ] && files+=("$p")
+  done
+  [ "${#files[@]}" -ge 2 ] || continue
+
+  # 一次性取出全部 inode（单次 stat 进程；逐文件 fork 在 MSYS 上极慢）
+  stat_out=$(stat -c '%d:%i' -- "${files[@]}" 2>/dev/null) \
+    || stat_out=$(stat -f '%d:%i' ${files[@]+"${files[@]}"} 2>/dev/null)
+  inodes=()
+  while IFS= read -r ln; do
+    [ -n "$ln" ] && inodes+=("$ln")
+  done <<EOF
+$stat_out
+EOF
+
+  n_seen=0
+  seen_r=()
+  seen_i=()
+  uniq_files=()
+  uniq_reals=()
+  idx=0
+  while [ "$idx" -lt "${#files[@]}" ]; do
+    f="${files[$idx]}"
+    if [ -L "$f" ]; then
+      # 只有软链才需要解析真实路径；普通文件自身即真实路径，省一次进程
+      real=$(readlink -f -- "$f" 2>/dev/null)
+      [ -n "$real" ] || real=$f
+    else
+      real=$f
+    fi
+    # stat 输出行数与参数对齐时才启用硬链接检测
+    inode=''
+    [ "${#inodes[@]}" -eq "${#files[@]}" ] && inode="${inodes[$idx]}"
+
+    # 硬链接的真实路径各不相同但 inode 相同，因此 inode 单独作为键，
+    # 不能与真实路径拼接，否则硬链接永远匹配不上
+    dup=0
+    i=0
+    while [ "$i" -lt "$n_seen" ]; do
+      if [ "${seen_r[$i]}" = "$real" ]; then dup=1; break; fi
+      if [ -n "$inode" ] && [ "${seen_i[$i]}" = "$inode" ]; then dup=1; break; fi
+      i=$((i + 1))
+    done
+
+    if [ "$dup" -eq 0 ]; then
+      seen_r+=("$real")
+      seen_i+=("$inode")
+      n_seen=$((n_seen + 1))
+      uniq_files+=("$f")
+      uniq_reals+=("$real")
+    fi
+    idx=$((idx + 1))
+  done
+  [ "${#uniq_files[@]}" -ge 2 ] || continue
+
+  echo "=== $cmd ==="
+  i=0
+  while [ "$i" -lt "${#uniq_files[@]}" ]; do
+    printf '  %s -> %s\n' "${uniq_files[$i]}" "${uniq_reals[$i]}"
+    i=$((i + 1))
+  done
+  echo "  * 生效: $(type -ap -- "$cmd" | head -n 1)"
+  echo
+done <<EOF
+$dups
+EOF
