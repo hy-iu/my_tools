@@ -10,6 +10,7 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { zstdDecompressAll } from './zstd.js';
 import { emptyAcc, writeSession, epochMsToIso, type SessionAcc } from './shared.js';
+import type { IngestSource } from './pi.js';
 
 export const DSH_SESSIONS_ROOT = path.join(homedir(), '.dsh', 'sessions');
 
@@ -24,7 +25,7 @@ function findZstdFiles(dir: string, depth = 0): string[] {
   return out;
 }
 
-function parseSessionFile(file: string): SessionAcc | undefined {
+function parseSessionFile(file: string, platform: string): SessionAcc | undefined {
   let acc: SessionAcc | undefined;
   let text: string;
   try {
@@ -43,6 +44,7 @@ function parseSessionFile(file: string): SessionAcc | undefined {
     const ts = epochMsToIso(o.time);
     if (o.type === 'session') {
       acc = emptyAcc(o.id, 'dsh');
+      acc.platform = platform;
       acc.cwd = o.cwd;
       acc.startedAt = epochMsToIso(o.createdAt);
       acc.lastActivity = acc.startedAt;
@@ -83,7 +85,9 @@ function parseSessionFile(file: string): SessionAcc | undefined {
   return acc;
 }
 
-export function ingestDshSessions(db: DatabaseSync, root: string = DSH_SESSIONS_ROOT): { files: number; sessions: number } {
+export function ingestDshSessions(db: DatabaseSync, opts: IngestSource = {}): { files: number; sessions: number } {
+  const root = opts.home ? path.join(opts.home, '.dsh', 'sessions') : DSH_SESSIONS_ROOT;
+  const platform = opts.platform ?? 'local';
   try {
     statSync(root);
   } catch {
@@ -93,7 +97,7 @@ export function ingestDshSessions(db: DatabaseSync, root: string = DSH_SESSIONS_
   let sessions = 0;
   for (const file of findZstdFiles(root)) {
     files += 1;
-    const acc = parseSessionFile(file);
+    const acc = parseSessionFile(file, platform);
     if (!acc) continue;
     if (writeSession(db, acc)) sessions += 1;
   }

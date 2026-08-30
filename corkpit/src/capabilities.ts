@@ -1,13 +1,13 @@
-// Skill / MCP capability discovery across adapted applications.
-// Read-only scans of each app's real config files; nothing is executed.
-// MCP tool USAGE comes separately from ingested tool_calls (`mcp__<server>__<tool>`).
+// Skill / MCP / plugin capability discovery across adapted applications and
+// platforms. Read-only scans of each app's real config files; nothing is
+// executed. MCP tool USAGE comes separately from ingested tool_calls
+// (`mcp__<server>__<tool>`).
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import type { DatabaseSync } from 'node:sqlite';
-
-const H = homedir();
+import { discoverPlatforms, LOCAL_PLATFORM_ID, type Platform } from './platforms.js';
 
 export interface McpServerInfo {
   name: string;
@@ -20,10 +20,12 @@ export interface McpServerInfo {
 export interface SkillInfo {
   name: string;
   source: string; // directory it was discovered in
+  detail?: string; // plugin version / enabled state / agent description
 }
 
 export interface AppCapabilities {
   app: string;
+  platform?: string; // set when not the local host, e.g. 'wsl:Ubuntu-26.04'
   mcpServers: McpServerInfo[];
   skills: SkillInfo[];
   notes?: string;
@@ -47,20 +49,32 @@ function classifyServer(spec: any): { transport: McpServerInfo['transport']; tar
   return { transport: 'unknown', target: JSON.stringify(spec).slice(0, 120) };
 }
 
+// dirs that exist in every tool home but are never skills/plugins
+const JUNK_DIRS = new Set([
+  'node_modules', '.git', 'bin', 'lib', 'cache', 'tmp', 'logs', 'data',
+  'backups', 'downloads', 'snapshots', 'sessions', 'state', 'crashes',
+  'scratch', 'bin-', 'builtin', 'implicit', 'knowledge',
+]);
+
 function listSkillDirs(dir: string): SkillInfo[] {
   if (!existsSync(dir)) return [];
   try {
     return readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !JUNK_DIRS.has(e.name.toLowerCase()))
       .map((e) => ({ name: e.name, source: dir }));
   } catch {
     return [];
   }
 }
 
-function claudeCodeCaps(): AppCapabilities {
+interface CapsCtx {
+  home: string; // platform home root
+  platform: string; // platform id ('local' for the host)
+}
+
+function claudeCodeCaps(ctx: CapsCtx): AppCapabilities {
   const servers: McpServerInfo[] = [];
-  const cfg = readJsonSafe(path.join(H, '.claude.json'));
+  const cfg = readJsonSafe(path.join(ctx.home, '.claude.json'));
   if (cfg) {
     for (const [name, spec] of Object.entries(cfg.mcpServers ?? {})) {
       servers.push({ name, scope: 'global', ...classifyServer(spec) });
@@ -71,12 +85,18 @@ function claudeCodeCaps(): AppCapabilities {
       }
     }
   }
-  return { app: 'claude-code', mcpServers: servers, skills: listSkillDirs(path.join(H, '.claude', 'skills')) };
+  const caps: AppCapabilities = {
+    app: 'claude-code',
+    mcpServers: servers,
+    skills: listSkillDirs(path.join(ctx.home, '.claude', 'skills')),
+  };
+  if (ctx.platform !== LOCAL_PLATFORM_ID) caps.platform = ctx.platform;
+  return caps;
 }
 
-function codexCaps(): AppCapabilities {
+function codexCaps(ctx: CapsCtx): AppCapabilities {
   const servers: McpServerInfo[] = [];
-  const file = path.join(H, '.codex', 'config.toml');
+  const file = path.join(ctx.home, '.codex', 'config.toml');
   if (existsSync(file)) {
     try {
       const cfg = parseToml(readFileSync(file, 'utf8')) as any;
@@ -87,64 +107,144 @@ function codexCaps(): AppCapabilities {
       /* malformed toml — skip */
     }
   }
-  return { app: 'codex', mcpServers: servers, skills: listSkillDirs(path.join(H, '.codex', 'skills')) };
+  const caps: AppCapabilities = {
+    app: 'codex',
+    mcpServers: servers,
+    skills: listSkillDirs(path.join(ctx.home, '.codex', 'skills')),
+  };
+  if (ctx.platform !== LOCAL_PLATFORM_ID) caps.platform = ctx.platform;
+  return caps;
 }
 
-function opencodeCaps(): AppCapabilities {
+function opencodeCaps(ctx: CapsCtx): AppCapabilities {
   const servers: McpServerInfo[] = [];
-  for (const f of [path.join(H, '.config', 'opencode', 'opencode.json'), path.join(H, '.config', 'opencode', 'opencode.jsonc')]) {
+  for (const f of [path.join(ctx.home, '.config', 'opencode', 'opencode.json'), path.join(ctx.home, '.config', 'opencode', 'opencode.jsonc')]) {
     const cfg = readJsonSafe(f);
     for (const [name, spec] of Object.entries<any>(cfg?.mcp ?? {})) {
       servers.push({ name, scope: 'global', ...classifyServer(spec) });
     }
   }
-  return { app: 'opencode', mcpServers: servers, skills: [] };
+  const caps: AppCapabilities = { app: 'opencode', mcpServers: servers, skills: [] };
+  if (ctx.platform !== LOCAL_PLATFORM_ID) caps.platform = ctx.platform;
+  return caps;
 }
 
-function dshCaps(): AppCapabilities {
+function dshCaps(ctx: CapsCtx): AppCapabilities {
   // dsh exposes extensions via harness plugins/bundles; surface the profile
   // directories as its "skill" equivalent instead of inventing an MCP view.
-  const skills: SkillInfo[] = [];
-  const profiles = path.join(H, '.dsh', 'profiles');
-  if (existsSync(profiles)) {
-    try {
-      for (const e of readdirSync(profiles, { withFileTypes: true })) {
-        if (e.isDirectory()) skills.push({ name: e.name, source: profiles });
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-  return { app: 'dsh', mcpServers: [], skills, notes: 'dsh plugins live in its profile layers (~/.dsh/profiles)' };
+  const caps: AppCapabilities = {
+    app: 'dsh',
+    mcpServers: [],
+    skills: listSkillDirs(path.join(ctx.home, '.dsh', 'profiles')),
+    notes: 'dsh plugins live in its profile layers (~/.dsh/profiles)',
+  };
+  if (ctx.platform !== LOCAL_PLATFORM_ID) caps.platform = ctx.platform;
+  return caps;
 }
 
-function piCaps(): AppCapabilities {
-  const cfg = readJsonSafe(path.join(H, '.pi', 'agent', 'settings.json'));
+function piCaps(ctx: CapsCtx): AppCapabilities {
+  const cfg = readJsonSafe(path.join(ctx.home, '.pi', 'agent', 'settings.json'));
   const servers: McpServerInfo[] = [];
   for (const [name, spec] of Object.entries<any>(cfg?.mcpServers ?? cfg?.mcp ?? {})) {
     servers.push({ name, scope: 'global', ...classifyServer(spec) });
   }
-  return { app: 'pi', mcpServers: servers, skills: [] };
+  const caps: AppCapabilities = { app: 'pi', mcpServers: servers, skills: [] };
+  if (ctx.platform !== LOCAL_PLATFORM_ID) caps.platform = ctx.platform;
+  return caps;
 }
 
-function antigravityCaps(): AppCapabilities {
+function antigravityCaps(ctx: CapsCtx): AppCapabilities {
   const servers: McpServerInfo[] = [];
-  for (const f of [path.join(H, '.agy', 'config.json'), path.join(H, '.gemini', 'antigravity-cli', 'settings.json')]) {
+  for (const f of [path.join(ctx.home, '.agy', 'config.json'), path.join(ctx.home, '.gemini', 'antigravity-cli', 'settings.json')]) {
     const cfg = readJsonSafe(f);
     for (const [name, spec] of Object.entries<any>(cfg?.mcpServers ?? cfg?.mcp ?? {})) {
       servers.push({ name, scope: 'global', ...classifyServer(spec) });
     }
   }
-  return {
+  const caps: AppCapabilities = {
     app: 'antigravity',
     mcpServers: servers,
-    skills: listSkillDirs(path.join(H, '.gemini', 'antigravity')),
-    notes: 'antigravity skills/workflows live under ~/.gemini/antigravity/',
+    // only real workflow/skill subdirs, not the whole antigravity home
+    skills: ['skills', 'workflows'].flatMap((d) =>
+      listSkillDirs(path.join(ctx.home, '.gemini', 'antigravity', d)).map((s) => ({ ...s, source: d }))),
+    notes: 'antigravity skills/workflows live under ~/.gemini/antigravity/{skills,workflows}/',
   };
+  if (ctx.platform !== LOCAL_PLATFORM_ID) caps.platform = ctx.platform;
+  return caps;
 }
 
-export function discoverCapabilities(): AppCapabilities[] {
-  return [claudeCodeCaps(), codexCaps(), opencodeCaps(), dshCaps(), piCaps(), antigravityCaps()];
+/** qoder / qoder-cn: MCP (mcp.json), plugins (installed_plugins_v2.json),
+ *  custom agents (agents/*.md) and skills (~/.qoder[-cn]/skills). */
+function qoderCaps(variant: 'qoder' | 'qoder-cn', ctx: CapsCtx): AppCapabilities {
+  const home = path.join(ctx.home, variant === 'qoder' ? '.qoder' : '.qoder-cn');
+  const servers: McpServerInfo[] = [];
+  const mcp = readJsonSafe(path.join(home, 'mcp.json'));
+  for (const [name, spec] of Object.entries<any>(mcp?.mcpServers ?? {})) {
+    servers.push({ name, scope: 'global', ...classifyServer(spec) });
+  }
+  const skills: SkillInfo[] = listSkillDirs(path.join(home, 'skills'));
+  // plugins with enabled state
+  const plugins = readJsonSafe(path.join(home, 'plugins', 'installed_plugins_v2.json'));
+  for (const [name, installs] of Object.entries<any>(plugins?.plugins ?? {})) {
+    for (const inst of Array.isArray(installs) ? installs : []) {
+      skills.push({
+        name,
+        source: 'plugins',
+        detail: `v${inst.version ?? '?'} · ${inst.enabled === false ? 'disabled' : 'enabled'}`,
+      });
+    }
+  }
+  // custom sub-agents
+  const agentsDir = path.join(home, 'agents');
+  if (existsSync(agentsDir)) {
+    try {
+      for (const e of readdirSync(agentsDir, { withFileTypes: true })) {
+        if (e.isFile() && e.name.endsWith('.md')) {
+          skills.push({ name: e.name.replace(/\.md$/, ''), source: 'agents', detail: 'agent' });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const caps: AppCapabilities = {
+    app: variant,
+    mcpServers: servers,
+    skills,
+    notes: 'qoder config: ~/.qoder[-cn]/{mcp.json,plugins,agents,skills}',
+  };
+  if (ctx.platform !== LOCAL_PLATFORM_ID) caps.platform = ctx.platform;
+  return caps;
+}
+
+function capsForPlatform(p: Platform): AppCapabilities[] {
+  const ctx: CapsCtx = { home: p.home, platform: p.id };
+  const all = [
+    claudeCodeCaps(ctx),
+    codexCaps(ctx),
+    opencodeCaps(ctx),
+    dshCaps(ctx),
+    piCaps(ctx),
+    antigravityCaps(ctx),
+    qoderCaps('qoder', ctx),
+    qoderCaps('qoder-cn', ctx),
+  ];
+  // skip cards for apps that have nothing at all on this platform
+  return all.filter((c) => c.mcpServers.length || c.skills.length || existsSync(path.join(p.home, `.${c.app.replace('-cn', '')}`)));
+}
+
+export async function discoverCapabilities(): Promise<AppCapabilities[]> {
+  const platforms = await discoverPlatforms();
+  const out: AppCapabilities[] = [];
+  for (const p of platforms) {
+    if (!p.available) continue;
+    try {
+      out.push(...capsForPlatform(p));
+    } catch {
+      /* a platform that half-exists shouldn't kill the whole scan */
+    }
+  }
+  return out;
 }
 
 /** Aggregate mcp__server__tool usage from ingested tool_calls. */

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
+import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DatabaseSync } from 'node:sqlite';
@@ -7,6 +8,9 @@ import { adapters, getAdapter } from './adapters/index.js';
 import { ingestAll } from './ingest/all.js';
 import { syncRegistry } from './ingest/registry.js';
 import { discoverCapabilities, mcpUsage } from './capabilities.js';
+import { canonicalProjectPath } from './paths.js';
+import { discoverPlatforms } from './platforms.js';
+import { probeFleet } from './fleet.js';
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui');
 const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
@@ -50,7 +54,7 @@ function sessionRows(db: DatabaseSync) {
       CASE WHEN s.last_activity IS NOT NULL
         AND (julianday('now') - julianday(s.last_activity)) * 86400000 < ${ACTIVE_WINDOW_MS}
       THEN 1 ELSE 0 END AS active
-    FROM sessions s ORDER BY s.last_activity DESC LIMIT 500`).all();
+    FROM sessions s ORDER BY s.last_activity DESC LIMIT 5000`).all();
 }
 
 function sankeyData(db: DatabaseSync, metric: 'tokens' | 'cost') {
@@ -80,8 +84,10 @@ function sankeyData(db: DatabaseSync, metric: 'tokens' | 'cost') {
     const p = node(`p:${r.provider_id ?? '?'}`, r.provider_id ?? 'unknown', 0);
     const m = node(`m:${r.model_id ?? '?'}`, r.model_id ?? 'unknown', 1);
     const a = node(`a:${r.agent_id}`, r.agent_id, 2);
-    const proj = projName(r.cwd);
-    const pr = node(`j:${r.cwd ?? '?'}`, proj, 3);
+    // group the project layer by canonical path so F:\x, /mnt/f/x and
+    // \\wsl.localhost\<d>\... collapse into one project node
+    const canon = canonicalProjectPath(r.cwd, 'local');
+    const pr = node(`j:${canon}`, projName(canon), 3);
     p.value += v; m.value += v; a.value += v; pr.value += v;
     addLink(p.id, m.id, v);
     addLink(m.id, a.id, v);
@@ -122,14 +128,42 @@ export function createServer(db: DatabaseSync): http.Server {
         return json(res, 200, { ok: true, ...r });
       }
       if (route === 'GET /api/capabilities') {
-        return json(res, 200, { apps: discoverCapabilities(), mcpUsage: mcpUsage(db) });
+        return json(res, 200, { apps: await discoverCapabilities(), mcpUsage: mcpUsage(db) });
+      }
+      if (route === 'GET /api/platforms') {
+        return json(res, 200, await discoverPlatforms());
+      }
+      if (route === 'GET /api/export') {
+        // read-only snapshot for fleet peers to aggregate
+        const health = {
+          ok: true,
+          active: (sessionRows(db) as any[]).filter((s) => s.active).length,
+          label: process.env.COCKPIT_LABEL ?? `${process.platform} · ${hostname()}`,
+        };
+        return json(res, 200, {
+          health,
+          agents: db.prepare(`
+            SELECT agent_id, COUNT(*) AS sessions, MAX(last_activity) AS last_activity,
+              SUM(CASE WHEN last_activity IS NOT NULL
+                AND (julianday('now') - julianday(last_activity)) * 86400000 < ${ACTIVE_WINDOW_MS}
+                THEN 1 ELSE 0 END) AS active
+            FROM sessions GROUP BY agent_id ORDER BY sessions DESC`).all(),
+          totals: db.prepare(`
+            SELECT COUNT(*) AS sessions, COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens+reasoning_tokens),0) AS tokens,
+              COALESCE(SUM(cost_total),0) AS cost FROM sessions`).get(),
+          platforms: await discoverPlatforms().then((ps) => ps.map((p) => ({ id: p.id, label: p.label, kind: p.kind, available: p.available }))),
+        });
+      }
+      if (route === 'GET /api/fleet') {
+        return json(res, 200, await probeFleet());
       }
       if (route === 'GET /api/sessions') {
         return json(res, 200, sessionRows(db));
       }
       if (route.startsWith('GET /api/session/')) {
         const id = decodeURIComponent(url.pathname.slice('/api/session/'.length));
-        if (!/^[\w.-]{1,128}$/.test(id)) {
+        // ids may carry a platform slug prefix: wsl-Ubuntu-26.04__<uuid>
+        if (!/^[\w.-]{1,200}$/.test(id)) {
           return json(res, 400, { ok: false, message: 'invalid session id' });
         }
         const session = db.prepare(`SELECT * FROM sessions WHERE id = ?`).get(id) as any;
@@ -243,7 +277,8 @@ export function createServer(db: DatabaseSync): http.Server {
           todayTokens: today.tokens ?? 0,
           agents: agentRows,
           apps: adapters.map((a) => a.id),
-          version: '0.1.0',
+          platforms: (await discoverPlatforms()).map((p) => ({ id: p.id, label: p.label, kind: p.kind, available: p.available })),
+          version: '0.2.0',
         });
       }
       if (route === 'GET /api/providers') {

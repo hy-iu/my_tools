@@ -10,13 +10,20 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { emptyAcc, writeSession, type SessionAcc } from './shared.js';
+import type { IngestSource } from './pi.js';
 
 export const CLAUDE_PROJECTS_ROOT = path.join(homedir(), '.claude', 'projects');
 
 function findJsonlFiles(dir: string, depth = 0): string[] {
   const out: string[] = [];
   if (depth > 8) return out;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
     const p = path.join(dir, entry.name);
     if (entry.isDirectory()) out.push(...findJsonlFiles(p, depth + 1));
     else if (entry.name.endsWith('.jsonl')) out.push(p);
@@ -24,7 +31,7 @@ function findJsonlFiles(dir: string, depth = 0): string[] {
   return out;
 }
 
-function parseSessionFile(file: string): SessionAcc | undefined {
+function parseSessionFile(file: string, platform: string): SessionAcc | undefined {
   let acc: SessionAcc | undefined;
   for (const line of readFileSync(file, 'utf8').split('\n')) {
     if (!line) continue;
@@ -38,6 +45,7 @@ function parseSessionFile(file: string): SessionAcc | undefined {
       // any record carrying a sessionId starts the accumulator
       if (!o.sessionId) continue;
       acc = emptyAcc(o.sessionId, 'claude-code');
+      acc.platform = platform;
       acc.cwd = o.cwd;
     }
     acc.cwd = o.cwd ?? acc.cwd;
@@ -71,7 +79,9 @@ function parseSessionFile(file: string): SessionAcc | undefined {
   return acc;
 }
 
-export function ingestClaudeSessions(db: DatabaseSync, root: string = CLAUDE_PROJECTS_ROOT): { files: number; sessions: number } {
+export function ingestClaudeSessions(db: DatabaseSync, opts: IngestSource = {}): { files: number; sessions: number } {
+  const root = opts.home ? path.join(opts.home, '.claude', 'projects') : CLAUDE_PROJECTS_ROOT;
+  const platform = opts.platform ?? 'local';
   try {
     statSync(root);
   } catch {
@@ -82,7 +92,7 @@ export function ingestClaudeSessions(db: DatabaseSync, root: string = CLAUDE_PRO
   for (const file of findJsonlFiles(root)) {
     files += 1;
     try {
-      const acc = parseSessionFile(file);
+      const acc = parseSessionFile(file, platform);
       if (!acc) continue;
       if (writeSession(db, acc)) sessions += 1;
     } catch (e) {

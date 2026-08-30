@@ -5,6 +5,8 @@ import { ingestAll } from './ingest/all.js';
 import { syncRegistry } from './ingest/registry.js';
 import { createServer } from './server.js';
 import { runTray } from './tray.js';
+import { discoverPlatforms } from './platforms.js';
+import { probeFleet } from './fleet.js';
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -17,10 +19,14 @@ function usage(): void {
   console.log(`cockpit — multi-level agent cockpit
 
 commands:
-  serve [--port 4177]            start local web UI + API
+  serve [--port 4177] [--host 127.0.0.1]
+                                 start web UI + API (use --host 0.0.0.0 to be a fleet peer)
   tray [--port 4177]             Windows tray host: background server + status icon,
                                  menu for panel/ingest/dsh update check/dsh web
-  ingest                         parse pi/dsh/claude/codex/opencode sessions into the store, sync registry
+  ingest                         parse sessions from every platform (host + WSL distros)
+                                 into the store, sync registry
+  platforms                      list discovered platforms (local / WSL / manual roots)
+  fleet                          show fleet peers from ~/.cockpit/fleet.json
   adapters                       print current config of every adapted application
   route --app <id> --provider <id> --model <id>
                                  switch an application's model/provider
@@ -35,28 +41,65 @@ const db = openDb();
 switch (command) {
   case 'tray': {
     const port = Number(flag('port') ?? 4177);
-    ingestAll(db);
-    syncRegistry(db);
-    db.close();
-    void runTray(port);
+    void ingestAll(db).then(() => syncRegistry(db)).finally(() => {
+      db.close();
+      void runTray(port);
+    });
     break;
   }
   case 'serve': {
     const port = Number(flag('port') ?? 4177);
-    ingestAll(db);
-    syncRegistry(db);
-    createServer(db).listen(port, '127.0.0.1', () => {
-      console.log(`cockpit running at http://127.0.0.1:${port}`);
-    });
+    const host = flag('host') ?? '127.0.0.1';
+    ingestAll(db)
+      .then((r) => {
+        syncRegistry(db);
+        console.log(`ingested ${r.sessions} sessions from ${r.files} files across ${Object.keys(r.byAgent).length} agent/platform sources`);
+      })
+      .then(() => {
+        createServer(db).listen(port, host, () => {
+          console.log(`cockpit running at http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port} (bound ${host})`);
+        });
+      });
     break;
   }
   case 'ingest': {
-    const r = ingestAll(db);
-    syncRegistry(db);
-    console.log(`ingested ${r.sessions} sessions from ${r.files} files`);
-    for (const [agent, s] of Object.entries(r.byAgent)) {
-      console.log(`  ${agent.padEnd(12)} ${String(s.sessions).padStart(4)} sessions / ${s.files} files`);
-    }
+    void ingestAll(db).then((r) => {
+      syncRegistry(db);
+      console.log(`ingested ${r.sessions} sessions from ${r.files} files`);
+      for (const [agent, s] of Object.entries(r.byAgent)) {
+        console.log(`  ${agent.padEnd(24)} ${String(s.sessions).padStart(4)} sessions / ${s.files} files`);
+      }
+    });
+    break;
+  }
+  case 'platforms': {
+    void discoverPlatforms().then((ps) => {
+      for (const p of ps) {
+        console.log(`${p.id.padEnd(28)} ${p.available ? 'ok' : 'unavailable'}  ${p.home}`);
+      }
+    });
+    break;
+  }
+  case 'fleet': {
+    void (async () => {
+      const peers = await probeFleet(3000);
+      if (!peers.length) {
+        console.log('no fleet peers — add ~/.cockpit/fleet.json:');
+        console.log('  [{ "id": "macbook", "name": "MacBook Pro", "url": "http://192.168.1.20:4177" }]');
+        console.log('peers run `cockpit serve --host 0.0.0.0` on the other machines.');
+        return;
+      }
+      for (const p of peers) {
+        if (!p.online) {
+          console.log(`${p.id.padEnd(16)} ${p.url}  OFFLINE`);
+          continue;
+        }
+        const t = p.totals ?? { sessions: 0, tokens: 0, cost: 0 };
+        const agents = (p.agents ?? []).map((a) => a.agent_id).join(', ');
+        console.log(`${p.id.padEnd(16)} ${p.url}  ${t.sessions} sessions · ${(t.tokens / 1e6).toFixed(1)}M tokens · $${t.cost.toFixed(2)}`);
+        console.log(`${''.padEnd(16)} agents: ${agents || '—'}`);
+      }
+    })();
     break;
   }
   case 'adapters': {

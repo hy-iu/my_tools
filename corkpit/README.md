@@ -51,6 +51,9 @@
 | codex | `~/.codex/sessions/**/*.jsonl` | `token_count` deltas, `turn_context` model, `mcp_tool_call_end` normalized to `mcp__server__tool` |
 | opencode | `~/.local/share/opencode/opencode.db` | read-only access to opencode's own SQLite (cost included) |
 | antigravity | `~/.gemini/antigravity-cli/settings.json` | read/write the persistent `model` field; auth is Google-account OAuth (not touched) |
+| qoder | `~/.qoder/projects/*/<sessionId>.jsonl` | Claude-Code-like JSONL; model from `runtime-config`; qoder emits no usage numbers (tokens stay 0) |
+| qoder-cn | `~/.qoder-cn/projects/*/<sessionId>.jsonl` | same format, separate install/account |
+| grok | `~/.grok/sessions/<url-encoded-cwd>/<id>/chat_history.jsonl` | sparse records; cwd decoded from the directory name |
 
 ## Run
 
@@ -64,7 +67,9 @@ node dist/cli.js serve            # web UI + API at http://127.0.0.1:4177
 
 | Command | What it does |
 |---|---|
-| `serve [--port 4177]` | local web UI + API |
+| `serve [--port 4177] [--host 127.0.0.1]` | web UI + API; `--host 0.0.0.0` makes the machine a fleet peer |
+| `platforms` | list discovered platforms (local / WSL distros / manual roots) |
+| `fleet` | probe fleet peers from `~/.cockpit/fleet.json` |
 | `tray [--port 4177]` | **Windows tray host**: background server + gauge icon. Menu: per-agent status rows (click → panel filtered to that agent), open panel, re-ingest all sources, check dsh updates (notify only), open dsh web. Tooltip = active sessions + today's cost |
 | `ingest` | parse pi/dsh/claude-code/codex/opencode history into the store, sync registry |
 | `adapters` | print current config of every adapted application |
@@ -79,6 +84,47 @@ MCP servers (`~/.claude.json` global + per-project, `~/.codex/config.toml
 skills/profiles (`~/.claude/skills`, `~/.codex/skills`, `~/.dsh/profiles`,
 `~/.gemini/antigravity/`). Below that, MCP **usage**: counts of
 `mcp__<server>__<tool>` calls aggregated from all ingested sessions.
+
+## Multi-platform & fleet
+
+Cockpit reads **every platform it can see from where it runs**:
+
+| Platform | How it is found | Sessions labelled |
+|---|---|---|
+| Windows/macOS/Linux host | the process home (`~`) | `local` |
+| WSL distros | `wsl -l`, home read through `\\wsl.localhost\<distro>` | `wsl:<Distro>` (session ids prefixed `wsl-<Distro>__`) |
+| manual roots | `~/.cockpit/platforms.json`: `[{"id":"mac","home":"/Volumes/mac/Users/me"}]` (sshfs / mounted drive) | `root:<id>` |
+
+Every ingester (pi, dsh, claude-code, codex, opencode, grok, qoder, qoder-cn)
+runs once per platform, so codex-on-Windows and codex-inside-Ubuntu stay
+separate rows with a platform tag; Mission Control has a platform filter.
+
+**Project identity across platforms** is canonicalized: `F:\x`, `/mnt/f/x`
+and `\\wsl.localhost\…\x` collapse into one project in Cost Flow and the
+projects registry.
+
+**Fleet (MacBook / Ubuntu servers):** those machines run their own
+`cockpit serve --host 0.0.0.0`. Register them in `~/.cockpit/fleet.json`:
+
+```json
+[
+  { "id": "macbook", "name": "MacBook Pro", "url": "http://192.168.1.20:4177" },
+  { "id": "gpu-box", "name": "Ubuntu server", "url": "http://192.168.1.30:4177" }
+]
+```
+
+The **Fleet** tab aggregates each peer live via its read-only `/api/export`
+(sessions/tokens/cost per agent + its platform list). Nothing is merged into
+the local store, so costs never double-count; `cockpit fleet` prints the same
+summary in the terminal.
+
+Notes & limits:
+
+- SQLite over `\\wsl.localhost` cannot take locks, so a WSL opencode store is
+  skipped with a warning; run `cockpit serve` inside that WSL distro (or via
+  fleet) to read it natively.
+- WSL distros are discovered with `wsl.exe`, so this part is Windows-only;
+  Mac/Linux hosts just get `local` + fleet.
 
 ## Tray implementation notes (Windows)
 

@@ -3,6 +3,7 @@ const $ = (sel) => document.querySelector(sel);
 const state = {
   sessions: [], overview: null, problems: null, knowledge: null, adapters: [], capabilities: null, providers: [],
   daily: [], trace: null, sort: { key: 'last_activity', dir: 'desc' }, dmetric: 'tokens', sankeyNodes: 0,
+  fleet: null, platforms: null,
 };
 
 async function api(path, opts) {
@@ -38,6 +39,35 @@ const fmtAbs = (ts) => (parseTs(ts) ?? new Date()).toLocaleString();
 const HOME_DIR_RE = /^(?:\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\\Users\\[^\\]+)/;
 const homeShort = (p) => String(p).replace(HOME_DIR_RE, '~');
 const projName = (cwd) => (cwd || '?').split(/[\/\\]/).filter(Boolean).pop() || cwd || '?';
+
+// canonical project key — JS port of src/paths.ts, so tracing a project
+// matches the same checkout no matter which platform the session ran on
+function canonicalProjectPath(cwd) {
+  if (!cwd) return '?';
+  let p = String(cwd).trim();
+  if (!p) return '?';
+  const unc = p.match(/^\\\\wsl(?:\.localhost|\$)\\([^\\]+)\\(.*)$/i);
+  if (unc) {
+    p = '/' + unc[2].replace(/\\/g, '/');
+  }
+  const mnt = p.match(/^\/mnt\/([A-Za-z])\/(.*)$/);
+  if (mnt) return `${mnt[1].toLowerCase()}:/${mnt[2].replace(/\\/g, '/')}`.replace(/\/+$/, '');
+  if (/^[A-Za-z]:[\\/]/.test(p)) {
+    const norm = p.replace(/\\/g, '/');
+    return norm.charAt(0).toLowerCase() + norm.slice(1).replace(/\/+$/, '');
+  }
+  return p.replace(/\/+$/, '');
+}
+
+// tray deep link support: #mission?agent=<id> (also handles re-clicks)
+function applyDeepLink(params) {
+  const urlAgent = params?.get?.('agent');
+  if (urlAgent) {
+    showView('mission');
+    $('#agent-filter').value = urlAgent;
+    renderMission();
+  }
+}
 
 const PALETTE = ['#58a6ff', '#3fb950', '#d2a8ff', '#d29922', '#ff7b9c', '#79c0ff', '#56d364', '#e3b341'];
 function agentColor(agent) {
@@ -92,7 +122,7 @@ function toast(msg, kind = 'ok') {
 }
 
 // ---------- tabs & keyboard ----------
-const VIEW_IDS = ['mission', 'problems', 'cost', 'knowledge', 'adapters', 'capabilities'];
+const VIEW_IDS = ['mission', 'problems', 'cost', 'knowledge', 'adapters', 'capabilities', 'fleet'];
 function parseHash() {
   const h = (location.hash || '').replace(/^#/, '');
   const [view, qs] = h.split('?');
@@ -104,11 +134,19 @@ function showView(name) {
   document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
   $('#view-' + name).classList.remove('hidden');
   if (name === 'cost') renderSankey();
+  if (name === 'fleet') loadFleet();
 }
 document.querySelectorAll('#tabs button').forEach((b) => b.addEventListener('click', () => {
-  location.hash = b.dataset.view;
-  showView(b.dataset.view);
+  if (parseHash().view !== b.dataset.view) location.hash = b.dataset.view;
+  else showView(b.dataset.view);
 }));
+// hash IS the router: back/forward and the tray's deep links
+// (#mission?agent=x, opened while the panel is already up) must re-render.
+window.addEventListener('hashchange', () => {
+  const { view, params } = parseHash();
+  showView(view || 'mission');
+  applyDeepLink(params);
+});
 
 document.addEventListener('keydown', (e) => {
   const typing = /input|textarea|select/i.test(document.activeElement?.tagName ?? '');
@@ -144,7 +182,7 @@ function sessionMatchesTrace(s) {
   if (t.agent && s.agent_id !== t.agent) return false;
   if (t.provider && s.provider_id !== t.provider) return false;
   if (t.model && s.model_id !== t.model) return false;
-  if (t.project && s.cwd !== t.project) return false;
+  if (t.project && canonicalProjectPath(s.cwd) !== canonicalProjectPath(t.project)) return false;
   return true;
 }
 
@@ -171,7 +209,7 @@ function nodeMatchesTrace(nodeId) {
   if (prefix === 'p') return !t.provider || t.provider === value;
   if (prefix === 'm') return !t.model || t.model === value;
   if (prefix === 'a') return !t.agent || t.agent === value;
-  if (prefix === 'j') return !t.project || t.project === value;
+  if (prefix === 'j') return !t.project || canonicalProjectPath(t.project) === value;
   return true;
 }
 
@@ -196,8 +234,9 @@ async function loadMission() {
 function sparkline(values, color) {
   const w = 64, h = 24;
   const max = Math.max(...values, 1);
+  const n = Math.max(values.length, 2);
   const pts = values.map((v, i) =>
-    `${(i / (values.length - 1)) * w},${h - (v / max) * (h - 2) - 1}`).join(' ');
+    `${(i / (n - 1)) * w},${h - (v / max) * (h - 2) - 1}`).join(' ');
   const svg = svgEl('svg', { width: w, height: h, viewBox: `0 0 ${w} ${h}` });
   svg.appendChild(svgEl('polyline', {
     points: pts, fill: 'none', stroke: color, 'stroke-width': 1.5, 'stroke-linejoin': 'round',
@@ -283,9 +322,11 @@ document.querySelectorAll('[data-dmetric]').forEach((b) => b.addEventListener('c
 function filteredSessions() {
   const q = $('#q').value.trim().toLowerCase();
   const agent = $('#agent-filter').value;
+  const platform = $('#platform-filter')?.value ?? '';
   const activeOnly = $('#active-only').checked;
   let rows = state.sessions.filter((s) => {
     if (agent && s.agent_id !== agent) return false;
+    if (platform && (s.platform ?? 'local') !== platform) return false;
     if (activeOnly && !s.active) return false;
     if (q) {
       const hay = [s.agent_id, s.model_id, s.provider_id ?? 'unknown', s.cwd, s.id].join(' ').toLowerCase();
@@ -317,6 +358,15 @@ function renderMission() {
     agents.map((a) => `<option value="${escAttr(a)}">${esc(a)}</option>`).join('');
   sel.value = agents.includes(cur) ? cur : '';
 
+  const psel = $('#platform-filter');
+  if (psel) {
+    const pcur = psel.value;
+    const platforms = [...new Set(state.sessions.map((s) => s.platform ?? 'local'))].sort();
+    psel.innerHTML = '<option value="">all platforms</option>' +
+      platforms.map((p) => `<option value="${escAttr(p)}">${esc(p)}</option>`).join('');
+    psel.value = platforms.includes(pcur) ? pcur : '';
+  }
+
   const rows = filteredSessions();
   const empty = $('#no-sessions');
   empty.textContent = emptyHint();
@@ -336,7 +386,7 @@ function renderMission() {
     tr.innerHTML = `
       <td><input type="checkbox" class="row-chk" data-id="${escAttr(s.id)}" ${selectedIds.has(s.id) ? 'checked' : ''}></td>
       <td><span class="dot ${s.active ? 'active' : ''}" title="${s.active ? 'active' : 'idle'}"></span></td>
-      <td data-trace-key="agent" data-trace-val="${escAttr(s.agent_id)}" title="click to trace agent">${badge(s.agent_id)}</td>
+      <td data-trace-key="agent" data-trace-val="${escAttr(s.agent_id)}" title="click to trace agent">${badge(s.agent_id)}${s.platform && s.platform !== 'local' ? ` <span class="tag">${esc(s.platform)}</span>` : ''}</td>
       <td class="prov-cell"><select class="prov-sel" data-id="${escAttr(s.id)}" title="provider for this session">${providerOptions(s.provider_id)}</select></td>
       <td class="mono" data-trace-key="model" data-trace-val="${escAttr(s.model_id ?? '?')}" title="${escAttr(s.model_id ?? '?')}${s.provider_id ? ' @ ' + escAttr(s.provider_id) : ''} · click to trace model">${esc(s.model_id ?? '?')}</td>
       <td data-trace-key="project" data-trace-val="${escAttr(s.cwd ?? '?')}" title="${escAttr(s.cwd ?? '')} · click to trace project">${esc(projName(s.cwd))}</td>
@@ -374,6 +424,7 @@ document.querySelectorAll('#sessions-table th[data-sort]').forEach((th) => th.ad
 }));
 $('#q').addEventListener('input', renderMission);
 $('#agent-filter').addEventListener('change', renderMission);
+$('#platform-filter')?.addEventListener('change', renderMission);
 $('#active-only').addEventListener('change', renderMission);
 
 $('#ingest-btn').addEventListener('click', async () => {
@@ -745,14 +796,15 @@ function renderCapabilities() {
     const skills = c.skills ?? [];
     card.innerHTML = `
       <div class="adapter-head">
-        <h3>${badge(c.app)}</h3>
+        <h3>${badge(c.app)}${c.platform && c.platform !== 'local' ? ` <span class="tag">${esc(c.platform)}</span>` : ''}</h3>
         <span class="hint">${servers.length} mcp · ${skills.length} skills</span>
       </div>
       ${servers.length ? servers.map((s) => `
         <div class="kv"><span class="tag">${esc(s.transport)}</span>${s.scope === 'project' ? `<span class="tag">project</span>` : ''}
           <b>${esc(s.name)}</b> <span class="mono dim" title="${escAttr(s.target)}">${esc((s.target || '').slice(0, 72))}</span>
           ${s.project ? `<div class="dim" style="font-size:11px">${esc(homeShort(s.project))}</div>` : ''}</div>`).join('') : '<div class="kv dim">no MCP servers configured</div>'}
-      ${skills.length ? `<div class="kv">skills: ${skills.map((s) => `<span class="tag">${esc(s.name)}</span>`).join('')}</div>` : ''}
+      ${skills.length ? `<div class="kv">skills: ${skills.map((s) =>
+        `<span class="tag" title="${escAttr(s.detail ?? s.source)}">${esc(s.name)}${s.detail ? ` <i class="dim">${esc(s.detail)}</i>` : ''}</span>`).join('')}</div>` : ''}
       ${c.notes ? `<div class="kv dim">${esc(c.notes)}</div>` : ''}`;
     wrap.appendChild(card);
   }
@@ -847,6 +899,63 @@ $('#pb-reset').addEventListener('click', async () => {
   await applyProvider([...selectedIds], '__reset__');
 });
 
+// ---------- fleet & platforms ----------
+async function loadFleet() {
+  try {
+    state.fleet = await api('fleet');
+    state.platforms = await api('platforms');
+  } catch {
+    state.fleet = [];
+    state.platforms = [];
+  }
+  renderFleet();
+  updateTabCounts();
+}
+
+function renderFleet() {
+  const wrap = $('#fleet-cards');
+  wrap.innerHTML = '';
+  const peers = state.fleet ?? [];
+  if (!peers.length) {
+    wrap.innerHTML = '<div class="card"><div class="hint">no fleet peers configured — see the setup hint above. This machine\'s own data is always in Mission Control.</div></div>';
+  }
+  for (const p of peers) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const t = p.totals ?? { sessions: 0, tokens: 0, cost: 0 };
+    card.innerHTML = `
+      <div class="adapter-head">
+        <h3><span class="dot ${p.online ? 'active' : ''}"></span> ${esc(p.name)}</h3>
+        <span class="hint">${p.online ? 'online' : 'offline'} · ${esc(p.url)}</span>
+      </div>
+      ${p.online ? `
+        <div class="kv">${t.sessions} sessions · ${fmtTokens(t.tokens)} tokens · ${fmtCost(t.cost)}</div>
+        <div class="kv">agents: ${(p.agents ?? []).map((a) => `<span class="tag">${esc(a.agent_id)} (${a.sessions})</span>`).join(' ') || '—'}</div>
+        ${(p.platforms ?? []).length ? `<div class="kv dim">platforms: ${(p.platforms ?? []).map((x) => esc(x.label)).join(', ')}</div>` : ''}
+        <div class="kv"><a class="mono" href="${escAttr(p.url)}/" target="_blank" rel="noreferrer">open panel →</a></div>`
+      : '<div class="kv dim">no response — is `cockpit serve --host 0.0.0.0` running there?</div>'}`;
+    wrap.appendChild(card);
+  }
+
+  const plist = $('#platform-list');
+  plist.innerHTML = '';
+  const platforms = state.platforms ?? [];
+  if (!platforms.length) {
+    plist.innerHTML = '<div class="hint">no platforms discovered</div>';
+    return;
+  }
+  for (const p of platforms) {
+    const row = document.createElement('div');
+    row.className = 'tool-row';
+    row.innerHTML = `
+      <span><span class="dot ${p.available ? 'active' : ''}"></span> <b>${esc(p.label)}</b> <span class="dim mono">${esc(p.id)}</span></span>
+      <span style="flex:1"></span>
+      <span class="mono dim" title="${escAttr(p.home)}">${esc(homeShort(p.home))}</span>
+      <span class="tag">${esc(p.kind)}</span>`;
+    plist.appendChild(row);
+  }
+}
+
 // ---------- tab record counts ----------
 async function loadSankeyCount() {
   try {
@@ -866,6 +975,7 @@ function updateTabCounts() {
     knowledge: state.knowledge?.notes?.length ?? 0,
     adapters: state.adapters.length,
     capabilities: capTotal,
+    fleet: (state.platforms?.length ?? 0) + (state.fleet?.length ?? 0),
   };
   document.querySelectorAll('#tabs button').forEach((b) => {
     const kb = b.querySelector('kbd[data-cnt]');
@@ -884,12 +994,7 @@ async function loadAll() {
   const { view, params } = parseHash();
   showView(view || 'mission');
   // deep link from the tray: #mission?agent=<id>
-  const urlAgent = params.get('agent');
-  if (urlAgent) {
-    showView('mission');
-    $('#agent-filter').value = urlAgent;
-    renderMission();
-  }
+  applyDeepLink(params);
   setInterval(() => { if (document.visibilityState === 'visible') loadMission(); }, 30000);
   window.addEventListener('resize', () => { renderDaily(); if (!$('#view-cost').classList.contains('hidden')) renderSankey(); });
 })();

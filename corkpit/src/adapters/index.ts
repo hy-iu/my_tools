@@ -6,6 +6,7 @@ import { opencodeAdapter } from './opencode.js';
 import { dshAdapter } from './dsh.js';
 import { antigravityAdapter } from './antigravity.js';
 import { ccSwitchAdapter } from './cc-switch.js';
+import { qoderAdapter, qoderCnAdapter } from './qoder.js';
 
 export const adapters: Adapter[] = [
   codexAdapter,
@@ -15,6 +16,8 @@ export const adapters: Adapter[] = [
   dshAdapter,
   antigravityAdapter,
   ccSwitchAdapter,
+  qoderAdapter,
+  qoderCnAdapter,
 ];
 
 export function getAdapter(id: string): Adapter | undefined {

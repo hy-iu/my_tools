@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cockpit · Multi-Agent Control</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1420'/%3E%3Cpath d='M7 21 A 11 11 0 0 1 25 21' stroke='%2358a6ff' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Cline x1='16' y1='16' x2='22' y2='10' stroke='%2358a6ff' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='25' cy='24' r='3' fill='%233fb950'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -20,6 +21,7 @@
     <button data-view="knowledge">Knowledge<kbd title="notes" data-cnt></kbd></button>
     <button data-view="adapters">Adapters<kbd title="adapters" data-cnt></kbd></button>
     <button data-view="capabilities">Skills &amp; MCP<kbd title="mcp + skills" data-cnt></kbd></button>
+    <button data-view="fleet">Fleet<kbd title="fleet peers" data-cnt></kbd></button>
   </nav>
   <div id="trace-bar" class="hidden">
     <span class="trace-icon">⌖</span>
@@ -45,6 +47,7 @@
     <div class="toolbar">
       <input id="q" type="search" placeholder="filter sessions — agent, model, provider, project…  ( / )" autocomplete="off">
       <select id="agent-filter"><option value="">all agents</option></select>
+      <select id="platform-filter"><option value="">all platforms</option></select>
       <label class="check"><input type="checkbox" id="active-only"> active only</label>
       <span class="spacer"></span>
       <span id="mission-summary" class="hint"></span>
@@ -127,6 +130,16 @@
     <div class="card chart-card" style="margin-top:14px">
       <div class="chart-head"><h3>MCP tool usage</h3><span class="hint">from ingested sessions</span></div>
       <div id="mcp-usage"></div>
+    </div>
+  </section>
+
+  <section id="view-fleet" class="view hidden">
+    <p class="hint pad">Fleet = your other machines running their own cockpit (MacBook, Ubuntu servers…). Add peers to <span class="mono">~/.cockpit/fleet.json</span> as
+      <span class="mono">[{"id":"macbook","name":"MacBook Pro","url":"http://192.168.1.20:4177"}]</span> and start them with <span class="mono">cockpit serve --host 0.0.0.0</span>. Data stays on each machine — costs never double-count.</p>
+    <div id="fleet-cards" class="card-grid"></div>
+    <div class="card chart-card" style="margin-top:14px">
+      <div class="chart-head"><h3>Platforms on this machine</h3><span class="hint">local + WSL distros + manual roots (~/.cockpit/platforms.json)</span></div>
+      <div id="platform-list"></div>
     </div>
   </section>
 </main>

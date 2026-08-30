@@ -7,6 +7,7 @@ import { backupFile, readJsonSafe, replaceTopLevelToml } from './util.js';
 
 const CONFIG = path.join(homedir(), '.codex', 'config.toml');
 const CATALOG = path.join(homedir(), '.codex', 'model-catalog.local.json');
+const MODELS_CACHE = path.join(homedir(), '.codex', 'models_cache.json');
 
 export const codexAdapter: Adapter = {
   id: 'codex',
@@ -37,6 +38,7 @@ export const codexAdapter: Adapter = {
           keySource: p.env_key ? `env:${p.env_key}` : 'none',
         });
       }
+      snapshot.configPaths = [CONFIG, CATALOG, MODELS_CACHE];
       const catalog = readJsonSafe(CATALOG);
       for (const m of catalog?.models ?? []) {
         snapshot.models.push({
@@ -46,6 +48,20 @@ export const codexAdapter: Adapter = {
           contextWindow: m.context_window,
           reasoning: (m.supported_reasoning_levels ?? []).length > 0,
         });
+      }
+      // fallback: the codex CLI's own model cache (same shape minus levels)
+      if (!snapshot.models.length) {
+        const cache = readJsonSafe(MODELS_CACHE);
+        for (const m of cache?.models ?? []) {
+          if (!m?.slug) continue;
+          snapshot.models.push({
+            id: m.slug,
+            providerId: '',
+            displayName: m.display_name ?? m.slug,
+            contextWindow: m.context_window,
+            reasoning: (m.supported_reasoning_levels ?? []).length > 0,
+          });
+        }
       }
     } catch (e) {
       snapshot.error = String(e);

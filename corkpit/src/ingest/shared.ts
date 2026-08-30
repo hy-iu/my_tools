@@ -1,5 +1,6 @@
 // Shared upsert plumbing for all ingesters.
 import type { DatabaseSync } from 'node:sqlite';
+import { scopedSessionIdById } from '../platforms.js';
 
 export interface TurnRow {
   role: string;
@@ -19,6 +20,7 @@ export interface SessionAcc {
   lastActivity?: string;
   providerId?: string;
   modelId?: string;
+  platform?: string; // platform id: 'local' | 'wsl:<distro>' | 'root:<name>'
   turns: number;
   toolCalls: number;
   inputTokens: number;
@@ -41,20 +43,24 @@ export function emptyAcc(id: string, agentId: string): SessionAcc {
 
 /** Replace one session's rows atomically. Returns true on success. */
 export function writeSession(db: DatabaseSync, acc: SessionAcc): boolean {
+  // non-local platforms get a scoped id so the same session file on two
+  // hosts (or the same id in two distros) can never collide.
+  acc.id = scopedSessionIdById(acc.platform, acc.id);
   // unknown / empty source (agent) -> fall back to the provider account so the
   // source column stays meaningful for any ingester that can't name its agent.
   if (!acc.agentId || acc.agentId === 'unknown') {
     acc.agentId = acc.providerId && acc.providerId !== 'unknown' ? acc.providerId : 'unknown';
   }
   const upsert = db.prepare(`
-    INSERT INTO sessions (id, agent_id, cwd, started_at, last_activity, provider_id, model_id,
+    INSERT INTO sessions (id, agent_id, cwd, started_at, last_activity, provider_id, model_id, platform,
       turns, tool_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, cost_total)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       agent_id = excluded.agent_id, cwd = excluded.cwd,
       started_at = excluded.started_at, last_activity = excluded.last_activity,
       provider_id = CASE WHEN sessions.provider_locked = 1 THEN sessions.provider_id ELSE excluded.provider_id END,
       model_id = excluded.model_id,
+      platform = excluded.platform,
       turns = excluded.turns, tool_calls = excluded.tool_calls,
       input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
       cache_read_tokens = excluded.cache_read_tokens, cache_write_tokens = excluded.cache_write_tokens,
@@ -67,7 +73,7 @@ export function writeSession(db: DatabaseSync, acc: SessionAcc): boolean {
   try {
     upsert.run(
       acc.id, acc.agentId, acc.cwd ?? null, acc.startedAt ?? null, acc.lastActivity ?? null,
-      acc.providerId ?? null, acc.modelId ?? null,
+      acc.providerId ?? null, acc.modelId ?? null, acc.platform ?? 'local',
       acc.turns, acc.toolCalls, acc.inputTokens, acc.outputTokens,
       acc.cacheReadTokens, acc.cacheWriteTokens, acc.reasoningTokens, acc.costTotal,
     );

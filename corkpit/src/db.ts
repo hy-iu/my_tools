@@ -118,12 +118,20 @@ export function openDb(dbPath: string = DB_PATH): DatabaseSync {
   mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL;');
+  // tray + serve + `cockpit ingest` legitimately run at the same time;
+  // without a busy timeout the second writer dies with SQLITE_BUSY.
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
   // migrate: manual provider assignments should survive re-ingest
   const sessCols = db.prepare(`PRAGMA table_info(sessions)`).all().map((c: any) => c.name);
   if (!sessCols.includes('provider_locked')) {
     db.exec(`ALTER TABLE sessions ADD COLUMN provider_locked INTEGER NOT NULL DEFAULT 0`);
+  }
+  // migrate: multi-platform — which host/distro a session was ingested from
+  if (!sessCols.includes('platform')) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN platform TEXT NOT NULL DEFAULT 'local'`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_platform ON sessions(platform)`);
   }
   return db;
 }

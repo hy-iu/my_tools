@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { adapters } from '../adapters/index.js';
+import { canonicalProjectPath, projectDisplayName } from '../paths.js';
 
 /** Sync agents, provider accounts, models, and projects from adapter snapshots into the DB. */
 export function syncRegistry(db: DatabaseSync): void {
@@ -37,7 +38,10 @@ export function syncRegistry(db: DatabaseSync): void {
     }
     const sessions = db.prepare(`SELECT DISTINCT cwd FROM sessions WHERE cwd IS NOT NULL AND cwd != ''`).all() as { cwd: string }[];
     for (const { cwd } of sessions) {
-      upsertProject.run(cwd, cwd.split('/').filter(Boolean).pop() ?? cwd);
+      // canonical key: the same checkout seen from Windows / WSL / mounts
+      // (F:\x, /mnt/f/x, \\wsl.localhost\…) registers as ONE project
+      const canon = canonicalProjectPath(cwd);
+      upsertProject.run(canon, projectDisplayName(canon));
     }
     db.exec('COMMIT');
   } catch (e) {

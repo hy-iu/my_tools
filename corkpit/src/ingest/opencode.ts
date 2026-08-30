@@ -8,6 +8,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { emptyAcc, writeSession } from './shared.js';
 import type { SessionAcc } from './shared.js';
+import type { IngestSource } from './pi.js';
 
 export const OPENCODE_DB = path.join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
 
@@ -38,13 +39,15 @@ function toIso(v: unknown): string | undefined {
   return new Date(n > 1e12 ? n : n * 1000).toISOString();
 }
 
-export function ingestOpencodeSessions(db: DatabaseSync, dbPath: string = OPENCODE_DB): { files: number; sessions: number } {
+export function ingestOpencodeSessions(db: DatabaseSync, opts: IngestSource = {}): { files: number; sessions: number } {
+  const dbPath = opts.home ? path.join(opts.home, '.local', 'share', 'opencode', 'opencode.db') : OPENCODE_DB;
+  const platform = opts.platform ?? 'local';
   if (!existsSync(dbPath)) return { files: 0, sessions: 0 };
   let src: DatabaseSync;
   try {
     src = new DatabaseSync(dbPath, { readOnly: true });
   } catch (e) {
-    console.error(`opencode db unreadable: ${e}`);
+    console.error(`opencode db unreadable (${dbPath}): ${e}`);
     return { files: 0, sessions: 0 };
   }
   let sessions = 0;
@@ -53,7 +56,9 @@ export function ingestOpencodeSessions(db: DatabaseSync, dbPath: string = OPENCO
     if (!hasTable) return { files: 0, sessions: 0 };
     const rows = src.prepare(`SELECT * FROM session`).all() as any[];
     for (const r of rows) {
+      // scope the id per platform so the same store on host and WSL stays distinct
       const acc: SessionAcc = emptyAcc(r.id, 'opencode');
+      acc.platform = platform;
       acc.cwd = r.directory ?? undefined;
       acc.startedAt = toIso(r.time_created);
       acc.lastActivity = toIso(r.time_updated) ?? acc.startedAt;
@@ -68,6 +73,12 @@ export function ingestOpencodeSessions(db: DatabaseSync, dbPath: string = OPENCO
       acc.cacheWriteTokens = Number(r.tokens_cache_write) || 0;
       if (writeSession(db, acc)) sessions += 1;
     }
+  } catch (e) {
+    // e.g. WAL databases on \\wsl.localhost: byte-range locking doesn't work
+    // through the 9P bridge → "database is locked". Report, don't propagate —
+    // one unreadable store must not kill the whole platform's ingest.
+    console.error(`opencode db not readable (${dbPath}): ${e}`);
+    return { files: 0, sessions: 0 };
   } finally {
     try {
       src.close();
