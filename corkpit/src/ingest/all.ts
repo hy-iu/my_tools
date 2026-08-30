@@ -14,6 +14,7 @@ import { ingestCodexSessions } from './codex.js';
 import { ingestOpencodeSessions } from './opencode.js';
 import { ingestGrokSessions } from './grok.js';
 import { ingestQoderSessions, ingestQoderCnSessions } from './qoder.js';
+import { ingestZcodeSessions } from './zcode.js';
 
 export interface IngestReport {
   files: number;
@@ -48,6 +49,7 @@ function ingestPlatform(db: DatabaseSync, p: Platform): IngestReport['byAgent'] 
   run('grok', () => ingestGrokSessions(db, src));
   run('qoder', () => ingestQoderSessions(db, src));
   run('qoder-cn', () => ingestQoderCnSessions(db, src));
+  run('zcode', () => ingestZcodeSessions(db, src));
   return byAgent;
 }
 

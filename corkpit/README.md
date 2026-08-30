@@ -54,6 +54,7 @@
 | qoder | `~/.qoder/projects/*/<sessionId>.jsonl` | Claude-Code-like JSONL; model from `runtime-config`; qoder emits no usage numbers (tokens stay 0) |
 | qoder-cn | `~/.qoder-cn/projects/*/<sessionId>.jsonl` | same format, separate install/account |
 | grok | `~/.grok/sessions/<url-encoded-cwd>/<id>/chat_history.jsonl` | sparse records; cwd decoded from the directory name |
+| zcode | `~/.zcode/cli/db/db.sqlite` (session / model_usage / tool_usage) | tokens, provider & model per request; subscription-based, so cost stays 0 |
 
 ## Run
 

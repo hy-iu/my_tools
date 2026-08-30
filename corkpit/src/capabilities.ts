@@ -6,7 +6,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import type { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 import { discoverPlatforms, LOCAL_PLATFORM_ID, type Platform } from './platforms.js';
 
 export interface McpServerInfo {
@@ -228,9 +228,98 @@ function capsForPlatform(p: Platform): AppCapabilities[] {
     antigravityCaps(ctx),
     qoderCaps('qoder', ctx),
     qoderCaps('qoder-cn', ctx),
+    zcodeCaps(ctx),
+    dockerMcpCaps(ctx),
   ];
   // skip cards for apps that have nothing at all on this platform
   return all.filter((c) => c.mcpServers.length || c.skills.length || existsSync(path.join(p.home, `.${c.app.replace('-cn', '')}`)));
+}
+
+/** zcode: MCP servers from ~/.zcode/cli/config.json (mcp.servers), plugins
+ *  (installed_plugins.json + enabledPlugins) and user skill dirs. */
+function zcodeCaps(ctx: CapsCtx): AppCapabilities {
+  const cfg = readJsonSafe(path.join(ctx.home, '.zcode', 'cli', 'config.json'));
+  const servers: McpServerInfo[] = [];
+  for (const [name, spec] of Object.entries<any>(cfg?.mcp?.servers ?? {})) {
+    servers.push({ name, scope: 'global', ...classifyServer(spec) });
+  }
+  const skills: SkillInfo[] = [];
+  const enabled = new Set(Object.entries<any>(cfg?.plugins?.enabledPlugins ?? {})
+    .filter(([, on]) => on === true).map(([id]) => id.split('@')[0]));
+  const installed = readJsonSafe(path.join(ctx.home, '.zcode', 'cli', 'plugins', 'installed_plugins.json'));
+  for (const p of installed?.plugins ?? []) {
+    skills.push({
+      name: p.name ?? p.id,
+      source: 'plugins',
+      detail: `v${p.version ?? '?'} · ${enabled.has(String(p.name ?? p.id).split('@')[0]) ? 'enabled' : 'disabled'}`,
+    });
+  }
+  for (const dir of [path.join(ctx.home, '.zcode', 'skills'), path.join(ctx.home, '.agents', 'skills')]) {
+    for (const s of listSkillDirs(dir)) skills.push({ ...s, detail: 'skill' });
+  }
+  return {
+    app: 'zcode',
+    platform: ctx.platform === LOCAL_PLATFORM_ID ? undefined : ctx.platform,
+    mcpServers: servers,
+    skills,
+    notes: 'zcode config: ~/.zcode/cli/config.json (mcp.servers, plugins)',
+  };
+}
+
+/** Docker MCP Toolkit: servers of every profile in ~/.docker/mcp/mcp-toolkit.db
+ *  (working_set). Run `docker mcp gateway run --profile <id>` to expose them. */
+function dockerMcpCaps(ctx: CapsCtx): AppCapabilities {
+  const dbPath = path.join(ctx.home, '.docker', 'mcp', 'mcp-toolkit.db');
+  if (!existsSync(dbPath)) return { app: 'docker-mcp', mcpServers: [], skills: [] };
+  let src: DatabaseSync;
+  try {
+    src = new DatabaseSync(dbPath, { readOnly: true });
+  } catch {
+    return { app: 'docker-mcp', mcpServers: [], skills: [] };
+  }
+  const servers: McpServerInfo[] = [];
+  const skills: SkillInfo[] = [];
+  try {
+    const sets = src.prepare(`SELECT id, name, servers FROM working_set`).all() as any[];
+    for (const set of sets) {
+      let list: any[] = [];
+      try {
+        list = JSON.parse(String(set.servers ?? '[]'));
+      } catch {
+        continue;
+      }
+      for (const s of list) {
+        const snap = s.snapshot?.server ?? {};
+        const tools = Array.isArray(snap.tools) ? snap.tools.length : 0;
+        servers.push({
+          name: snap.name ?? s.endpoint ?? '?',
+          scope: 'global',
+          transport: s.type === 'remote' ? 'http' : 'stdio',
+          target: s.endpoint ?? snap.image ?? '',
+        });
+        skills.push({
+          name: `${snap.name ?? s.endpoint ?? '?'} · ${set.id}`,
+          source: 'docker-mcp',
+          detail: `${s.type === 'remote' ? 'remote' : 'image'} · ${tools} tools`,
+        });
+      }
+    }
+  } catch {
+    /* unreadable toolkit db */
+  } finally {
+    try {
+      src.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  return {
+    app: 'docker-mcp',
+    platform: ctx.platform === LOCAL_PLATFORM_ID ? undefined : ctx.platform,
+    mcpServers: servers,
+    skills,
+    notes: 'Docker MCP Toolkit profile (~/.docker/mcp/mcp-toolkit.db); expose via `docker mcp gateway run --profile <id>`',
+  };
 }
 
 export async function discoverCapabilities(): Promise<AppCapabilities[]> {
